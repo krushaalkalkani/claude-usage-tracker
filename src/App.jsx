@@ -35,6 +35,16 @@ export default function App() {
         if (data.usage) setUsage(data.usage);
         if (data.lastFetch) setLastFetch(new Date(data.lastFetch));
       }
+      // Auto-detect OAuth token injected from Claude Code session via Vite env
+      const envToken = import.meta.env.VITE_OAUTH_TOKEN;
+      if (envToken) {
+        const stored = localStorage.getItem(STORAGE_KEY);
+        const storedToken = stored ? JSON.parse(stored).token : null;
+        if (!storedToken || storedToken !== envToken) {
+          setSavedToken(envToken);
+          persist({ token: envToken });
+        }
+      }
     } catch {}
     setLoading(false);
   }, []);
