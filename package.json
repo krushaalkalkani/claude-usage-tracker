@@ -4,7 +4,15 @@
   "description": "A beautiful, real-time React application to automatically track and visualize your Anthropic Claude usage rate limits.",
   "author": "Krushal Kalkani",
   "license": "MIT",
-  "keywords": ["claude", "anthropic", "usage", "tracker", "rate-limits", "react", "dashboard"],
+  "keywords": [
+    "claude",
+    "anthropic",
+    "usage",
+    "tracker",
+    "rate-limits",
+    "react",
+    "dashboard"
+  ],
   "type": "module",
   "scripts": {
     "dev": "vite",
