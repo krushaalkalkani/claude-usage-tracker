@@ -35,16 +35,6 @@ export default function App() {
         if (data.usage) setUsage(data.usage);
         if (data.lastFetch) setLastFetch(new Date(data.lastFetch));
       }
-      // Auto-detect OAuth token injected from Claude Code session via Vite env
-      const envToken = import.meta.env.VITE_OAUTH_TOKEN;
-      if (envToken) {
-        const stored = localStorage.getItem(STORAGE_KEY);
-        const storedToken = stored ? JSON.parse(stored).token : null;
-        if (!storedToken || storedToken !== envToken) {
-          setSavedToken(envToken);
-          persist({ token: envToken });
-        }
-      }
     } catch {}
     setLoading(false);
   }, []);
@@ -58,9 +48,17 @@ export default function App() {
     } catch {}
   }, []);
 
+  const abortRef = useRef(null);
+
   const fetchUsage = useCallback(async (tok) => {
     const t = tok || savedToken;
     if (!t) return;
+
+    // Abort any in-flight request to prevent duplicates
+    if (abortRef.current) abortRef.current.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     setFetching(true);
     setError("");
     try {
@@ -70,7 +68,12 @@ export default function App() {
           "anthropic-beta": "oauth-2025-04-20",
           "Content-Type": "application/json",
         },
+        signal: controller.signal,
       });
+      if (resp.status === 429) {
+        setFetching(false);
+        return;
+      }
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({}));
         throw new Error(err?.error?.message || `HTTP ${resp.status}`);
@@ -79,7 +82,6 @@ export default function App() {
       setUsage(data);
       setLastFetch(new Date());
 
-      // Add to history (keep last 200 entries, one per poll)
       const entry = {
         ts: new Date().toISOString(),
         s: data.five_hour?.utilization ?? null,
@@ -91,6 +93,7 @@ export default function App() {
         return newHist;
       });
     } catch (e) {
+      if (e.name === "AbortError") return;
       setError(e.message || "Failed to fetch");
     }
     setFetching(false);
