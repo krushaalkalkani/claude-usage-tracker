@@ -8,7 +8,7 @@
 TOKEN_FILE="$HOME/.claude-usage-token"
 
 if [ ! -f "$TOKEN_FILE" ]; then
-  echo "C — | size=12"
+  echo "C | size=12"
   echo "---"
   echo "Token not found | color=#ef4444 size=13"
   echo "Save token to ~/.claude-usage-token | color=#888 size=12"
@@ -24,9 +24,10 @@ RESPONSE=$(curl -s --max-time 10 \
   -H "Content-Type: application/json" 2>/dev/null)
 
 if [ $? -ne 0 ] || echo "$RESPONSE" | grep -q '"error"'; then
-  echo "C — | size=12"
+  echo "C | size=12"
   echo "---"
-  echo "API Error — token may be expired | color=#ef4444 size=12"
+  echo "API Error | color=#ef4444 size=12"
+  echo "Token may be expired or rate limited | color=#888 size=11"
   echo "---"
   echo "Retry | refresh=true size=12"
   exit 0
@@ -65,25 +66,21 @@ SESSION_RESET=$(echo "$PARSED" | cut -d'|' -f3 | tr '_' ' ')
 WEEKLY_RESET=$(echo "$PARSED" | cut -d'|' -f4 | tr '_' ' ')
 
 if [ -z "$SESSION" ]; then
-  echo "C — | size=12"
+  echo "C | size=12"
   echo "---"
   echo "Parse error | color=#ef4444 size=12"
   exit 0
 fi
 
-# SF Symbol color based on usage
 if [ "$SESSION" -ge 80 ]; then
-  SFCOLOR="#ef4444"
   COLOR="#ef4444"
-  WSTATUS="Critical"
+  STATUS="Critical"
 elif [ "$SESSION" -ge 50 ]; then
-  SFCOLOR="#f59e0b"
   COLOR="#f59e0b"
-  WSTATUS="Moderate"
+  STATUS="Warning"
 else
-  SFCOLOR="#10b981"
   COLOR="#10b981"
-  WSTATUS="Good"
+  STATUS="Good"
 fi
 
 if [ "$WEEKLY" -ge 80 ]; then
@@ -94,77 +91,34 @@ else
   WCOLOR="#8b5cf6"
 fi
 
-# ── Generate compact menu bar icon ──
-ICON_B64=$(python3 -c "
-import base64, io
-from PIL import Image, ImageDraw, ImageFont
-
-pct = ${SESSION}
-color = '${COLOR}'
-
-cr = int(color[1:3], 16)
-cg = int(color[3:5], 16)
-cb = int(color[5:7], 16)
-
-text = str(pct)
-try:
-    font = ImageFont.truetype('/System/Library/Fonts/HelveticaNeue.ttc', 12, index=7)
-except:
-    font = ImageFont.load_default()
-
-# Measure text to fit snugly
-tmp = Image.new('RGBA', (1, 1))
-bbox = ImageDraw.Draw(tmp).textbbox((0, 0), text, font=font)
-tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-
-pad = 4
-SZ = th + pad * 2 + 2
-if tw + pad * 2 > SZ:
-    SZ = tw + pad * 2 + 2
-
-img = Image.new('RGBA', (SZ, SZ), (0, 0, 0, 0))
-d = ImageDraw.Draw(img)
-
-# Square with max rounding (like Notion icon)
-d.rounded_rectangle([0, 0, SZ-1, SZ-1], radius=SZ//3, fill=(0, 0, 0, 0), outline=(40, 40, 40, 220), width=1)
-
-# Centered text
-tx = (SZ - tw) // 2 - bbox[0]
-ty = (SZ - th) // 2 - bbox[1]
-d.text((tx, ty), text, fill=(30, 30, 30, 230), font=font)
-
-buf = io.BytesIO()
-img.save(buf, format='PNG')
-print(base64.b64encode(buf.getvalue()).decode())
-")
-
-# ── Menu Bar — Notion-style icon only ──
-echo "| image=$ICON_B64 size=12"
+# ── Menu bar: just text, no image (clean, scales with any mode) ──
+echo "${SESSION}% | size=11 font=HelveticaNeue-Medium"
 
 # ── Dropdown ──
 echo "---"
-echo "Claude Usage · ${WSTATUS} | size=13 color=#ffffff"
+echo "Claude Usage | size=14 color=#ffffff"
+echo "${STATUS} | size=11 color=#666"
 echo "---"
 
 # 5-Hour Session
-echo "5-Hour Session | size=12 color=#999"
+echo "Session (5h) | size=11 color=#999"
 SESSION_BARS=$((SESSION / 5))
 SESSION_EMPTY=$((20 - SESSION_BARS))
 SESSION_BAR=$(printf '▓%.0s' $(seq 1 $SESSION_BARS 2>/dev/null) ; printf '░%.0s' $(seq 1 $SESSION_EMPTY 2>/dev/null))
-echo "${SESSION_BAR}  ${SESSION}% | size=12 font=Menlo color=$COLOR"
-echo "Resets in ${SESSION_RESET} | size=11 color=#666"
+echo "${SESSION_BAR}  ${SESSION}% | size=11 font=Menlo color=$COLOR"
+echo "Resets in ${SESSION_RESET} | size=10 color=#555"
 echo "---"
 
 # 7-Day Weekly
-echo "7-Day Weekly | size=12 color=#999"
+echo "Weekly (7d) | size=11 color=#999"
 WEEKLY_BARS=$((WEEKLY / 5))
 WEEKLY_EMPTY=$((20 - WEEKLY_BARS))
 WEEKLY_BAR=$(printf '▓%.0s' $(seq 1 $WEEKLY_BARS 2>/dev/null) ; printf '░%.0s' $(seq 1 $WEEKLY_EMPTY 2>/dev/null))
-echo "${WEEKLY_BAR}  ${WEEKLY}% | size=12 font=Menlo color=$WCOLOR"
-echo "Resets in ${WEEKLY_RESET} | size=11 color=#666"
+echo "${WEEKLY_BAR}  ${WEEKLY}% | size=11 font=Menlo color=$WCOLOR"
+echo "Resets in ${WEEKLY_RESET} | size=10 color=#555"
 echo "---"
 
-echo "Open Dashboard | href=http://localhost:5173 size=12"
+echo "Open Dashboard | href=https://claude-usage-tracker-xi.vercel.app size=12"
 echo "Refresh | refresh=true size=12"
 echo "---"
-echo "$(date '+%I:%M %p') | size=10 color=#555"
+echo "$(date '+%I:%M %p') | size=10 color=#444"
