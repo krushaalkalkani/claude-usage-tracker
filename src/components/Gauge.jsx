@@ -1,8 +1,8 @@
-export function Gauge({ value, label, sub, size = 146 }) {
+export function Gauge({ value, label, sub, size = 150 }) {
   const v = value ?? 0;
   const center = size / 2;
   const ringWidth = 6;
-  const ringR = center - 18;
+  const ringR = center - 14;
   const c = 2 * Math.PI * ringR;
   const off = c - (v / 100) * c;
 
@@ -13,7 +13,7 @@ export function Gauge({ value, label, sub, size = 146 }) {
   const arcColor2 = isCritical ? "#f472b6" : isWarn ? "#fde68a" : "#c4b5fd";
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
       <div style={{ position: "relative", width: size, height: size }}>
         <svg viewBox={`0 0 ${size} ${size}`} width={size} height={size}>
           <defs>
@@ -29,11 +29,8 @@ export function Gauge({ value, label, sub, size = 146 }) {
               </feMerge>
             </filter>
           </defs>
-          {/* Outer decorative ring */}
           <circle cx={center} cy={center} r={center - 3} fill="none" stroke="rgba(255,255,255,0.04)" strokeWidth={1} />
-          {/* Track */}
           <circle cx={center} cy={center} r={ringR} fill="none" stroke="rgba(255,255,255,0.07)" strokeWidth={ringWidth} />
-          {/* Arc */}
           <circle
             cx={center} cy={center} r={ringR}
             fill="none" stroke={`url(#${gradId})`} strokeWidth={ringWidth}
@@ -45,15 +42,52 @@ export function Gauge({ value, label, sub, size = 146 }) {
             style={{ color: arcColor, transition: "stroke-dashoffset 1.2s cubic-bezier(0.4, 0, 0.2, 1), stroke 0.6s" }}
           />
         </svg>
-        <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
-          <span style={{ fontSize: 34, fontWeight: 300, color: "#f5f5f7", letterSpacing: "-0.04em", lineHeight: 1, fontFamily: "'Inter', sans-serif" }}>
-            {v}<span style={{ fontSize: 16, fontWeight: 400, color: "rgba(255,255,255,0.35)", marginLeft: 2 }}>%</span>
+        <div style={{
+          position: "absolute",
+          inset: 0,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          pointerEvents: "none",
+        }}>
+          <span style={{
+            fontSize: 44,
+            fontWeight: 300,
+            color: "#f5f5f7",
+            letterSpacing: "-0.045em",
+            lineHeight: 1,
+            fontFamily: "'Inter', sans-serif",
+          }}>
+            {v}
+            <span style={{
+              fontSize: 18,
+              fontWeight: 400,
+              color: "rgba(255,255,255,0.4)",
+              marginLeft: 2,
+              letterSpacing: 0,
+            }}>%</span>
           </span>
-          <span style={{ fontSize: 9, fontWeight: 600, color: "#71717a", marginTop: 6, textTransform: "uppercase", letterSpacing: "0.12em" }}>{label}</span>
         </div>
       </div>
+      <span style={{
+        fontSize: 10,
+        fontWeight: 600,
+        color: "#a1a1aa",
+        textTransform: "uppercase",
+        letterSpacing: "0.14em",
+      }}>
+        {label}
+      </span>
       {sub && (
-        <span style={{ fontSize: 11, color: "#a1a1aa", textAlign: "center", maxWidth: size + 20, lineHeight: 1.35, fontFamily: "'JetBrains Mono', monospace" }}>
+        <span style={{
+          fontSize: 11,
+          color: "#71717a",
+          textAlign: "center",
+          maxWidth: size + 40,
+          lineHeight: 1.35,
+          fontFamily: "'JetBrains Mono', monospace",
+          marginTop: -2,
+        }}>
           {sub}
         </span>
       )}
