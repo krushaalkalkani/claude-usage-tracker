@@ -8,7 +8,7 @@ import { DetailRow } from "./components/DetailRow";
 import "./App.css";
 
 const STORAGE_KEY = "claude-auto-tracker";
-const POLL_INTERVAL = 60000; // 60 seconds
+const POLL_INTERVAL_SEC = 120;
 
 export default function App() {
   const [token, setToken] = useState("");
@@ -21,7 +21,7 @@ export default function App() {
   const [lastFetch, setLastFetch] = useState(null);
   const [view, setView] = useState("live");
   const [showSetup, setShowSetup] = useState(false);
-  const [timeToNext, setTimeToNext] = useState(120);
+  const [timeToNext, setTimeToNext] = useState(POLL_INTERVAL_SEC);
   const [copied, setCopied] = useState(false);
 
   // Load saved data
@@ -104,13 +104,13 @@ export default function App() {
     if (!savedToken) return;
     
     fetchUsage(savedToken);
-    setTimeToNext(120);
-    
+    setTimeToNext(POLL_INTERVAL_SEC);
+
     const interval = setInterval(() => {
       setTimeToNext(prev => {
         if (prev <= 1) {
           fetchUsage(savedToken);
-          return 120;
+          return POLL_INTERVAL_SEC;
         }
         return prev - 1;
       });
@@ -141,7 +141,13 @@ export default function App() {
   const sevenDay = usage?.seven_day;
   const sonnet = usage?.seven_day_sonnet;
   const opus = usage?.seven_day_opus;
+  const haiku = usage?.seven_day_haiku;
   const extra = usage?.extra_usage;
+
+  const extraOver = extra?.is_enabled && extra?.used_credits != null && extra?.monthly_limit != null
+    && extra.used_credits > extra.monthly_limit
+    ? extra.used_credits - extra.monthly_limit
+    : 0;
 
   // Chart data (last 30)
   const chartData = history.slice(0, 30).reverse().map(h => ({
@@ -162,6 +168,27 @@ export default function App() {
       if (tDiffMin > 0 && diff > 0) burnRate = diff / tDiffMin;
     }
   }
+
+  // Projected ETA: minutes until session hits 100% at current burn rate
+  const currentSession = fiveHour?.utilization ?? 0;
+  const etaMinutes = burnRate > 0 && currentSession < 100
+    ? Math.round((100 - currentSession) / burnRate)
+    : null;
+
+  const downloadHistoryCsv = () => {
+    const rows = [["timestamp", "session_pct", "weekly_pct"]];
+    for (const h of history) {
+      rows.push([h.ts, h.s != null ? h.s.toFixed(2) : "", h.w != null ? h.w.toFixed(2) : ""]);
+    }
+    const csv = rows.map(r => r.join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `claude-usage-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
 
   if (loading) return (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", background: "#000", color: "#888", fontFamily: "'JetBrains Mono', monospace", fontSize: 13 }}>Loading workspace...</div>
@@ -262,8 +289,8 @@ export default function App() {
               {fetching ? "Refreshing..." : lastFetch ? `Updated ${timeUntil(lastFetch.toISOString()) === "now" ? "just now" : timeUntil(lastFetch.toISOString()) + " ago"}` : "Connecting..."}
               <span style={{ color: "#333" }}>|</span>
               <span style={{ color: timeToNext < 10 ? "#ef4444" : "#888" }}>↻ in {timeToNext}s</span>
-              <button 
-                onClick={() => { fetchUsage(savedToken); setTimeToNext(120); }} 
+              <button
+                onClick={() => { fetchUsage(savedToken); setTimeToNext(POLL_INTERVAL_SEC); }}
                 style={{ background: "none", border: "1px solid #333", borderRadius: 4, color: "#ededed", cursor: "pointer", fontSize: 10, padding: "2px 6px", marginLeft: 4, transition: "background 0.1s" }} 
                 onMouseOver={e=>e.target.style.background="#222"} 
                 onMouseOut={e=>e.target.style.background="none"}
@@ -316,7 +343,11 @@ export default function App() {
               <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                 <div>
                   <div style={{ fontSize: 13, fontWeight: 600, color: "#ededed" }}>Usage Velocity</div>
-                  <div style={{ fontSize: 12, color: "#888", marginTop: 4 }}>You are actively burning limits</div>
+                  <div style={{ fontSize: 12, color: "#888", marginTop: 4 }}>
+                    {etaMinutes != null
+                      ? `At this rate, session hits 100% in ~${etaMinutes}m`
+                      : "You are actively burning limits"}
+                  </div>
                 </div>
               </div>
               <div style={{ textAlign: "right" }}>
@@ -333,6 +364,7 @@ export default function App() {
               <DetailRow label="7-Day All Models" value={sevenDay?.utilization} resetAt={sevenDay?.resets_at} color="#8b5cf6" />
               {sonnet && <DetailRow label="7-Day Sonnet" value={sonnet?.utilization} resetAt={sonnet?.resets_at} color="#06b6d4" />}
               {opus && <DetailRow label="7-Day Opus" value={opus?.utilization} resetAt={opus?.resets_at} color="#f59e0b" />}
+              {haiku && <DetailRow label="7-Day Haiku" value={haiku?.utilization} resetAt={haiku?.resets_at} color="#10b981" />}
             </div>
           </div>
 
@@ -342,6 +374,11 @@ export default function App() {
               <p style={{ fontSize: 12, color: "#94a3b8", margin: 0 }}>
                 Used: ${extra.used_credits?.toFixed(2) ?? "0.00"} / Limit: ${extra.monthly_limit?.toFixed(2) ?? "—"}
               </p>
+              {extraOver > 0 && (
+                <p style={{ fontSize: 12, color: "#fca5a5", margin: "6px 0 0", fontWeight: 500 }}>
+                  Over limit by ${extraOver.toFixed(2)}
+                </p>
+              )}
             </div>
           )}
 
@@ -399,7 +436,17 @@ export default function App() {
               </div>
 
               <div style={S.card}>
-                <h3 style={S.secT}>Poll Log ({history.length} entries)</h3>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+                  <h3 style={{ ...S.secT, margin: 0 }}>Poll Log ({history.length} entries)</h3>
+                  <button
+                    onClick={downloadHistoryCsv}
+                    style={{ background: "none", border: "1px solid #333", borderRadius: 4, color: "#a1a1aa", cursor: "pointer", fontSize: 10, padding: "3px 8px", fontFamily: "inherit", transition: "background 0.1s" }}
+                    onMouseOver={e => e.target.style.background = "#222"}
+                    onMouseOut={e => e.target.style.background = "none"}
+                  >
+                    Export CSV
+                  </button>
+                </div>
                 <div style={{ maxHeight: 250, overflow: "auto" }}>
                   {history.slice(0, 50).map((h, i) => (
                     <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", borderBottom: "1px solid #141f30", fontSize: 11 }}>
@@ -420,7 +467,7 @@ export default function App() {
       )}
 
       <div style={{ textAlign: "center", fontSize: 9, color: "#222", padding: "12px 0" }}>
-        Auto-refreshes every 120s · Data persists across sessions
+        Auto-refreshes every {POLL_INTERVAL_SEC}s · Data persists across sessions
       </div>
     </div>
   );

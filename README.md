@@ -9,8 +9,11 @@ A minimal, real-time dashboard to monitor your Claude rate limits. Tracks 5-hour
 ## What It Does
 
 - **Circular Gauges** — See your current session (5hr) and weekly (7d) usage at a glance
-- **Burn Rate** — Live velocity metric showing how fast you're consuming your quota
+- **Per-Model Breakdown** — Separate bars for Sonnet, Opus, and Haiku 7-day limits when your account surfaces them
+- **Burn Rate + ETA** — Live velocity plus projected time until the session hits 100%
+- **Over-Limit Warning** — Flags when extra-usage spend has exceeded your monthly cap
 - **Historical Charts** — Tracks usage over time with area charts
+- **CSV Export** — Download your full poll history for offline analysis
 - **Auto-Refresh** — Polls every 120 seconds with a countdown timer
 - **macOS Menu Bar** — Optional SwiftBar plugin shows usage in your menu bar
 - **100% Client-Side** — Your token stays in your browser. No backend, no third-party servers
