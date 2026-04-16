@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { XAxis, YAxis, Tooltip, ResponsiveContainer, AreaChart, Area } from "recharts";
+import { XAxis, YAxis, Tooltip, ResponsiveContainer, AreaChart, Area, CartesianGrid } from "recharts";
 import { timeUntil, resetLabel } from "./utils/time";
 import { S } from "./utils/styles";
 import { Gauge } from "./components/Gauge";
@@ -20,11 +20,9 @@ export default function App() {
   const [fetching, setFetching] = useState(false);
   const [lastFetch, setLastFetch] = useState(null);
   const [view, setView] = useState("live");
-  const [showSetup, setShowSetup] = useState(false);
   const [timeToNext, setTimeToNext] = useState(POLL_INTERVAL_SEC);
   const [copied, setCopied] = useState(false);
 
-  // Load saved data
   useEffect(() => {
     try {
       const r = localStorage.getItem(STORAGE_KEY);
@@ -54,7 +52,6 @@ export default function App() {
     const t = tok || savedToken;
     if (!t) return;
 
-    // Abort any in-flight request to prevent duplicates
     if (abortRef.current) abortRef.current.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -99,10 +96,9 @@ export default function App() {
     setFetching(false);
   }, [savedToken, persist]);
 
-  // Auto-poll with countdown
   useEffect(() => {
     if (!savedToken) return;
-    
+
     fetchUsage(savedToken);
     setTimeToNext(POLL_INTERVAL_SEC);
 
@@ -115,7 +111,7 @@ export default function App() {
         return prev - 1;
       });
     }, 1000);
-    
+
     return () => clearInterval(interval);
   }, [savedToken]); // eslint-disable-line
 
@@ -124,7 +120,6 @@ export default function App() {
     if (!t) return;
     setSavedToken(t);
     setToken("");
-    setShowSetup(false);
     persist({ token: t });
     fetchUsage(t);
   };
@@ -149,15 +144,13 @@ export default function App() {
     ? extra.used_credits - extra.monthly_limit
     : 0;
 
-  // Chart data (last 30)
   const chartData = history.slice(0, 30).reverse().map(h => ({
     t: new Date(h.ts).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false }),
     session: h.s != null ? Math.round(h.s) : null,
     weekly: h.w != null ? Math.round(h.w) : null,
   }));
 
-  // Unique Feature: Burn Rate Estimator
-  const recentHist = history.slice(0, 6); // roughly last 5 minutes of polling
+  const recentHist = history.slice(0, 6);
   let burnRate = 0;
   if (recentHist.length >= 2 && recentHist[0].s != null) {
     const oldest = recentHist[recentHist.length - 1];
@@ -169,7 +162,6 @@ export default function App() {
     }
   }
 
-  // Projected ETA: minutes until session hits 100% at current burn rate
   const currentSession = fiveHour?.utilization ?? 0;
   const etaMinutes = burnRate > 0 && currentSession < 100
     ? Math.round((100 - currentSession) / burnRate)
@@ -190,72 +182,111 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
-  if (loading) return (
-    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", background: "#000", color: "#888", fontFamily: "'JetBrains Mono', monospace", fontSize: 13 }}>Loading workspace...</div>
-  );
+  if (loading) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh", color: "#a1a1aa", fontFamily: "'JetBrains Mono', monospace", fontSize: 13 }}>
+        Loading workspace…
+      </div>
+    );
+  }
 
-  // Unified Setup Screen
   if (!savedToken) {
     return (
-      <div style={{ ...S.wrap, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "40px 20px", minHeight: "100vh" }}>
-        <div className="animate-fade-in" style={{ width: "100%", maxWidth: 380 }}>
-          
-          <div style={{ textAlign: "center", marginBottom: 32 }}>
-            <div style={{ width: 48, height: 48, background: "#fff", color: "#000", fontSize: 28, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 12, margin: "0 auto 16px", fontFamily: "-apple-system, sans-serif" }}>C</div>
-            <h1 style={{ fontSize: 20, fontWeight: 600, color: "#ededed", margin: 0, letterSpacing: "-0.01em" }}>Usage Tracker</h1>
-            <p style={{ fontSize: 13, color: "#888", marginTop: 6, lineHeight: 1.5 }}>
-              Connect your Anthropic session to cleanly monitor 5-hour boundary rate limits.
+      <div style={{ ...S.wrap, alignItems: "center", justifyContent: "center", padding: "60px 20px" }}>
+        <div className="animate-fade-in" style={{ width: "100%", maxWidth: 400 }}>
+
+          <div style={{ textAlign: "center", marginBottom: 28 }}>
+            <div style={{ ...S.logo, margin: "0 auto 18px", width: 56, height: 56, fontSize: 26, borderRadius: 16 }}>C</div>
+            <h1 style={{ fontSize: 24, fontWeight: 600, margin: 0, letterSpacing: "-0.02em", color: "#f5f5f7" }}>Usage Tracker</h1>
+            <p style={{ fontSize: 13, color: "#a1a1aa", marginTop: 8, lineHeight: 1.55 }}>
+              Connect your Anthropic session to monitor rate limits in real time.
             </p>
           </div>
 
-          <div style={{ background: "#0a0a0a", border: "1px solid #222", borderRadius: 12, padding: 20, boxShadow: "0 8px 32px rgba(0,0,0,0.5)" }}>
-            <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: "#a1a1aa", marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.05em" }}>Session Token</label>
+          <div className="glass" style={{ padding: 22 }}>
+            <label style={{ display: "block", fontSize: 10, fontWeight: 600, color: "#a1a1aa", marginBottom: 10, textTransform: "uppercase", letterSpacing: "0.1em" }}>
+              Session Token
+            </label>
             <textarea
               value={token}
               onChange={(e) => setToken(e.target.value)}
-              placeholder="Paste token (sk-ant-...) "
-              style={{ width: "100%", background: "#050505", border: "1px solid #27272a", borderRadius: 8, padding: "12px 14px", color: "#ededed", fontSize: 13, fontFamily: "'JetBrains Mono', monospace", outline: "none", resize: "none", transition: "border 0.2s", boxSizing: "border-box", marginBottom: 16 }}
-              onFocus={e => e.target.style.borderColor = "#52525b"}
-              onBlur={e => e.target.style.borderColor = "#27272a"}
+              placeholder="Paste token (sk-ant-…)"
+              style={{
+                width: "100%",
+                background: "rgba(0, 0, 0, 0.25)",
+                border: "1px solid rgba(255, 255, 255, 0.08)",
+                borderRadius: 12,
+                padding: "12px 14px",
+                color: "#f5f5f7",
+                fontSize: 12,
+                fontFamily: "'JetBrains Mono', monospace",
+                outline: "none",
+                resize: "none",
+                transition: "border 0.2s, background 0.2s",
+                boxSizing: "border-box",
+                marginBottom: 14,
+              }}
+              onFocus={e => { e.target.style.borderColor = "rgba(125, 211, 252, 0.4)"; e.target.style.background = "rgba(0,0,0,0.35)"; }}
+              onBlur={e => { e.target.style.borderColor = "rgba(255, 255, 255, 0.08)"; e.target.style.background = "rgba(0,0,0,0.25)"; }}
               rows={3}
             />
-            
-            <button 
-              onClick={saveToken} 
-              style={{ width: "100%", background: token.trim() ? "#ededed" : "#27272a", color: token.trim() ? "#000" : "#52525b", border: "none", borderRadius: 8, padding: "10px 0", fontSize: 13, fontWeight: 600, cursor: token.trim() ? "pointer" : "not-allowed", transition: "all 0.2s" }}
+            <button
+              onClick={saveToken}
+              style={{
+                width: "100%",
+                background: token.trim()
+                  ? "linear-gradient(135deg, #f5f5f7, #e4e4e7)"
+                  : "rgba(255, 255, 255, 0.04)",
+                color: token.trim() ? "#0a0a0f" : "#52525b",
+                border: "1px solid rgba(255, 255, 255, 0.12)",
+                borderRadius: 12,
+                padding: "11px 0",
+                fontSize: 13,
+                fontWeight: 600,
+                cursor: token.trim() ? "pointer" : "not-allowed",
+                transition: "all 0.2s",
+                boxShadow: token.trim() ? "0 8px 24px rgba(255, 255, 255, 0.06)" : "none",
+              }}
             >
-              Connect securely
+              Connect
             </button>
           </div>
 
-          <div style={{ marginTop: 24, background: "transparent", border: "1px solid #1a1a1a", borderRadius: 12, overflow: "hidden" }}>
-            <div style={{ padding: "12px 16px", background: "#111", borderBottom: "1px solid #1a1a1a", fontSize: 12, fontWeight: 600, color: "#a1a1aa" }}>
-              How to securely get your token
+          <div className="glass" style={{ marginTop: 18, padding: 0, overflow: "hidden" }}>
+            <div style={{ padding: "14px 18px", borderBottom: "1px solid rgba(255, 255, 255, 0.06)", fontSize: 11, fontWeight: 600, color: "#d4d4d8", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+              How to get your token
             </div>
-            <div style={{ padding: "16px", fontSize: 12, color: "#888", lineHeight: 1.6 }}>
+            <div style={{ padding: 18, fontSize: 12, color: "#a1a1aa", lineHeight: 1.6 }}>
               <p style={{ margin: "0 0 14px 0" }}>
-                <strong style={{ color: "#ededed" }}>Browser:</strong> Login to <a href="https://claude.ai" target="_blank" style={{color:"#38bdf8", textDecoration:"none"}}>claude.ai</a> → Open DevTools (F12) → Application → Cookies → Copy <code>sessionKey</code>.
+                <strong style={{ color: "#f5f5f7" }}>Browser:</strong> Login to <a href="https://claude.ai" target="_blank" rel="noreferrer" style={{ color: "#7dd3fc", textDecoration: "none" }}>claude.ai</a> → DevTools (F12) → Application → Cookies → copy <code>sessionKey</code>.
               </p>
-              
-              <p style={{ margin: "0 0 8px 0" }}>
-                <strong style={{ color: "#ededed" }}>Claude Code (Mac):</strong> Run to extract:
+              <p style={{ margin: "0 0 10px 0" }}>
+                <strong style={{ color: "#f5f5f7" }}>Claude Code (Mac):</strong>
               </p>
-              <div 
-                style={{ position: "relative", background: "#050505", border: "1px solid #222", borderRadius: 8, padding: "12px", paddingRight: 36, cursor: "pointer", transition: "border 0.2s, background 0.2s" }}
+              <div
+                style={{
+                  position: "relative",
+                  background: "rgba(0, 0, 0, 0.3)",
+                  border: "1px solid rgba(255, 255, 255, 0.06)",
+                  borderRadius: 10,
+                  padding: "12px",
+                  paddingRight: 36,
+                  cursor: "pointer",
+                  transition: "border 0.2s, background 0.2s",
+                }}
                 onClick={() => {
                   navigator.clipboard.writeText(`security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null | python3 -c "import sys,json; print(json.loads(sys.stdin.read())['claudeAiOauth']['accessToken'])"`);
                   setCopied(true);
                   setTimeout(() => setCopied(false), 2000);
                 }}
-                onMouseOver={e => { e.currentTarget.style.borderColor = "#444"; e.currentTarget.style.background = "#0a0a0a"; }}
-                onMouseOut={e => { e.currentTarget.style.borderColor = "#222"; e.currentTarget.style.background = "#050505"; }}
+                onMouseOver={e => { e.currentTarget.style.borderColor = "rgba(255,255,255,0.14)"; }}
+                onMouseOut={e => { e.currentTarget.style.borderColor = "rgba(255,255,255,0.06)"; }}
                 title="Click to copy"
               >
-                <div style={{ fontSize: 11, color: "#a1a1aa", fontFamily: "'JetBrains Mono', monospace", wordBreak: "break-all", lineHeight: 1.5 }}>
+                <div style={{ fontSize: 11, color: "#d4d4d8", fontFamily: "'JetBrains Mono', monospace", wordBreak: "break-all", lineHeight: 1.5 }}>
                   security find-generic-password -s "Claude Code-credentials" -w 2&gt;/dev/null | python3 -c "import sys,json; print(json.loads(sys.stdin.read())['claudeAiOauth']['accessToken'])"
                 </div>
-                
-                <div style={{ position: "absolute", right: 12, top: 12, color: copied ? "#4ade80" : "#52525b", transition: "color 0.2s" }}>
+                <div style={{ position: "absolute", right: 12, top: 12, color: copied ? "#6ee7b7" : "#71717a", transition: "color 0.2s" }}>
                   {copied ? (
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
                   ) : (
@@ -265,9 +296,9 @@ export default function App() {
               </div>
             </div>
           </div>
-          <div style={{ textAlign: "center", marginTop: 20, fontSize: 11, color: "#555" }}>
-            <span style={{ display:"inline-block", marginRight: 6 }}>🔒</span>
-            100% Client-Side. Token rarely leaves your browser. No backend.
+
+          <div style={{ textAlign: "center", marginTop: 20, fontSize: 11, color: "#71717a" }}>
+            100% client-side · Token stays in your browser
           </div>
         </div>
       </div>
@@ -277,128 +308,227 @@ export default function App() {
   return (
     <div style={S.wrap}>
       {/* Header */}
-      <div style={S.head}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+      <div style={S.head} className="animate-fade-in">
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <div style={S.logoSm}>C</div>
           <div>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <h1 style={{ fontSize: 16, fontWeight: 700, margin: 0, color: "#e2e8f0" }}>Usage Tracker</h1>
+              <h1 style={{ fontSize: 16, fontWeight: 600, margin: 0, color: "#f5f5f7", letterSpacing: "-0.01em" }}>Usage Tracker</h1>
               <StatusDot connected={!error && !!usage} />
             </div>
-            <div style={{ fontSize: 11, color: "#888", margin: "4px 0 0", fontFamily: "'JetBrains Mono', monospace", display: "flex", alignItems: "center", gap: 8 }}>
-              {fetching ? "Refreshing..." : lastFetch ? `Updated ${timeUntil(lastFetch.toISOString()) === "now" ? "just now" : timeUntil(lastFetch.toISOString()) + " ago"}` : "Connecting..."}
-              <span style={{ color: "#333" }}>|</span>
-              <span style={{ color: timeToNext < 10 ? "#ef4444" : "#888" }}>↻ in {timeToNext}s</span>
-              <button
-                onClick={() => { fetchUsage(savedToken); setTimeToNext(POLL_INTERVAL_SEC); }}
-                style={{ background: "none", border: "1px solid #333", borderRadius: 4, color: "#ededed", cursor: "pointer", fontSize: 10, padding: "2px 6px", marginLeft: 4, transition: "background 0.1s" }} 
-                onMouseOver={e=>e.target.style.background="#222"} 
-                onMouseOut={e=>e.target.style.background="none"}
-              >
-                Force Fetch
-              </button>
+            <div style={{ fontSize: 10.5, color: "#a1a1aa", margin: "4px 0 0", fontFamily: "'JetBrains Mono', monospace", display: "flex", alignItems: "center", gap: 8 }}>
+              {fetching ? "Refreshing…" : lastFetch ? `Updated ${timeUntil(lastFetch.toISOString()) === "now" ? "just now" : timeUntil(lastFetch.toISOString()) + " ago"}` : "Connecting…"}
+              <span style={{ color: "rgba(255,255,255,0.15)" }}>│</span>
+              <span style={{ color: timeToNext < 10 ? "#fb7185" : "#a1a1aa" }}>↻ {timeToNext}s</span>
             </div>
           </div>
         </div>
-        <div style={{ display: "flex", gap: 3 }}>
-          {["live", "chart", "⚙️"].map(t => (
-            <button key={t} onClick={() => t === "⚙️" ? disconnect() : setView(t)}
-              style={{ ...S.tab, ...(view === t ? S.tabA : {}), ...(t === "⚙️" ? { color: "#ef4444", borderColor: "#7f1d1d" } : {}) }}>
-              {t === "live" ? "Live" : t === "chart" ? "Chart" : t}
+        <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+          <button
+            onClick={() => { fetchUsage(savedToken); setTimeToNext(POLL_INTERVAL_SEC); }}
+            style={{ ...S.tab, fontSize: 11 }}
+            onMouseOver={e => { e.currentTarget.style.background = "rgba(255,255,255,0.05)"; }}
+            onMouseOut={e => { e.currentTarget.style.background = "transparent"; }}
+            title="Force refresh"
+          >
+            ↻ Fetch
+          </button>
+          {["live", "chart"].map(t => (
+            <button key={t} onClick={() => setView(t)}
+              style={{ ...S.tab, ...(view === t ? S.tabA : {}) }}>
+              {t === "live" ? "Live" : "Chart"}
             </button>
           ))}
+          <button
+            onClick={disconnect}
+            style={{ ...S.tab, color: "#fb7185", borderColor: "rgba(251, 113, 133, 0.25)" }}
+            onMouseOver={e => { e.currentTarget.style.background = "rgba(251, 113, 133, 0.08)"; }}
+            onMouseOut={e => { e.currentTarget.style.background = "transparent"; }}
+            title="Disconnect"
+          >
+            ⏻
+          </button>
         </div>
       </div>
 
       {error && (
-        <div style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #7f1d1d", background: "#1c0a0a", fontSize: 11, color: "#fca5a5", marginBottom: 12 }}>
-          ⚠️ {error}
-          <br /><span style={{ color: "#64748b" }}>Token may be expired — click ⚙️ to reconnect</span>
+        <div style={S.alertRed} className="animate-fade-in">
+          ⚠ {error}
+          <br />
+          <span style={{ color: "#a1a1aa", fontSize: 11 }}>Token may be expired — click ⏻ to reconnect</span>
         </div>
       )}
 
       {view === "live" && usage && (
         <>
-          {/* Main Gauges */}
-          <div style={{ display: "flex", justifyContent: "center", gap: 40, margin: "12px 0 8px" }}>
-            <Gauge value={Math.round(fiveHour?.utilization ?? 0)} label="Current Session"
-              sub={fiveHour?.resets_at ? `Resets in ${timeUntil(fiveHour.resets_at)}` : null} />
-            <Gauge value={Math.round(sevenDay?.utilization ?? 0)} label="Weekly Limit"
-              sub={sevenDay?.resets_at ? `Resets ${resetLabel(sevenDay.resets_at)}` : null} />
+          {/* Hero Gauges */}
+          <div style={S.heroCard} className="animate-fade-in">
+            <div style={{
+              position: "absolute",
+              top: -60,
+              right: -60,
+              width: 220,
+              height: 220,
+              borderRadius: "50%",
+              background: "radial-gradient(circle, rgba(125, 211, 252, 0.15), transparent 70%)",
+              pointerEvents: "none",
+            }} />
+            <div style={{
+              position: "absolute",
+              bottom: -80,
+              left: -40,
+              width: 260,
+              height: 260,
+              borderRadius: "50%",
+              background: "radial-gradient(circle, rgba(196, 181, 253, 0.12), transparent 70%)",
+              pointerEvents: "none",
+            }} />
+            <div style={{ display: "flex", justifyContent: "center", gap: 48, flexWrap: "wrap", position: "relative" }}>
+              <Gauge value={Math.round(fiveHour?.utilization ?? 0)} label="Current Session"
+                sub={fiveHour?.resets_at ? `Resets in ${timeUntil(fiveHour.resets_at)}` : null} />
+              <Gauge value={Math.round(sevenDay?.utilization ?? 0)} label="Weekly Limit"
+                sub={sevenDay?.resets_at ? `Resets ${resetLabel(sevenDay.resets_at)}` : null} />
+            </div>
           </div>
 
           {/* Alerts */}
           {(fiveHour?.utilization ?? 0) >= 95 && (
-            <div className="animate-fade-in" style={{ padding: "12px 16px", borderRadius: 8, border: "1px solid #ef444455", background: "#ef444411", color: "#fca5a5", fontSize: 13, fontWeight: 500, marginBottom: 16, textAlign: "center" }}>
-              EXTREME CRITICAL: You are at {Math.round(fiveHour.utilization)}%. Cease generation immediately or risk hitting hard limits. Resets in {timeUntil(fiveHour.resets_at)}.
+            <div className="animate-fade-in" style={{ ...S.alertRed, textAlign: "center" }}>
+              <strong>CRITICAL</strong> — at {Math.round(fiveHour.utilization)}%. Resets in {timeUntil(fiveHour.resets_at)}.
             </div>
           )}
-          {(fiveHour?.utilization ?? 0) >= 80 && (fiveHour?.utilization ?? 0) < 95 && <div style={S.alertRed}>Session critical at {Math.round(fiveHour.utilization)}% — resets in {timeUntil(fiveHour.resets_at)}</div>}
-          {(fiveHour?.utilization ?? 0) >= 50 && (fiveHour?.utilization ?? 0) < 80 && <div style={S.alertYellow}>Session at {Math.round(fiveHour.utilization)}% — pace yourself</div>}
-          {(sevenDay?.utilization ?? 0) >= 70 && <div style={S.alertRed}>Weekly at {Math.round(sevenDay.utilization)}% — conserve until {resetLabel(sevenDay.resets_at)}</div>}
+          {(fiveHour?.utilization ?? 0) >= 80 && (fiveHour?.utilization ?? 0) < 95 && (
+            <div style={S.alertRed} className="animate-fade-in">Session critical at {Math.round(fiveHour.utilization)}% — resets in {timeUntil(fiveHour.resets_at)}</div>
+          )}
+          {(fiveHour?.utilization ?? 0) >= 50 && (fiveHour?.utilization ?? 0) < 80 && (
+            <div style={S.alertYellow} className="animate-fade-in">Session at {Math.round(fiveHour.utilization)}% — pace yourself</div>
+          )}
+          {(sevenDay?.utilization ?? 0) >= 70 && (
+            <div style={S.alertRed} className="animate-fade-in">Weekly at {Math.round(sevenDay.utilization)}% — conserve until {resetLabel(sevenDay.resets_at)}</div>
+          )}
 
-          {/* Feature: Burn Rate Estimator Tracker */}
+          {/* Velocity */}
           {burnRate > 0 && (
-            <div className="animate-fade-in" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "16px", borderRadius: 8, background: "#0a0a0a", border: "1px solid #222", marginBottom: 16 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                <div>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: "#ededed" }}>Usage Velocity</div>
-                  <div style={{ fontSize: 12, color: "#888", marginTop: 4 }}>
-                    {etaMinutes != null
-                      ? `At this rate, session hits 100% in ~${etaMinutes}m`
-                      : "You are actively burning limits"}
-                  </div>
+            <div className="animate-fade-in" style={{ ...S.card, display: "flex", justifyContent: "space-between", alignItems: "center", padding: "18px 22px" }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "#f5f5f7", display: "flex", alignItems: "center", gap: 8 }}>
+                  <span className="glow-dot" style={{ color: burnRate > 1.5 ? "#fb7185" : "#7dd3fc" }} />
+                  Usage Velocity
+                </div>
+                <div style={{ fontSize: 12, color: "#a1a1aa", marginTop: 6 }}>
+                  {etaMinutes != null
+                    ? `Session hits 100% in ~${etaMinutes}m at this rate`
+                    : "Actively consuming quota"}
                 </div>
               </div>
               <div style={{ textAlign: "right" }}>
-                <div style={{ fontSize: 15, fontWeight: 600, color: burnRate > 1.5 ? "#ef4444" : "#ededed", fontFamily: "'JetBrains Mono', monospace" }}>+{burnRate.toFixed(2)}% / min</div>
+                <div style={{
+                  fontSize: 17,
+                  fontWeight: 600,
+                  color: burnRate > 1.5 ? "#fb7185" : "#f5f5f7",
+                  fontFamily: "'JetBrains Mono', monospace",
+                  letterSpacing: "-0.01em",
+                }}>
+                  +{burnRate.toFixed(2)}%
+                </div>
+                <div style={{ fontSize: 10, color: "#71717a", marginTop: 2, fontFamily: "'JetBrains Mono', monospace" }}>per min</div>
               </div>
             </div>
           )}
 
-          {/* Detail Cards */}
-          <div style={S.card}>
+          {/* Rate Limit Details */}
+          <div style={S.card} className="animate-fade-in">
             <h3 style={S.secT}>Rate Limit Details</h3>
             <div style={S.detailGrid}>
-              <DetailRow label="5-Hour Session" value={fiveHour?.utilization} resetAt={fiveHour?.resets_at} color="#3b82f6" />
-              <DetailRow label="7-Day All Models" value={sevenDay?.utilization} resetAt={sevenDay?.resets_at} color="#8b5cf6" />
-              {sonnet && <DetailRow label="7-Day Sonnet" value={sonnet?.utilization} resetAt={sonnet?.resets_at} color="#06b6d4" />}
-              {opus && <DetailRow label="7-Day Opus" value={opus?.utilization} resetAt={opus?.resets_at} color="#f59e0b" />}
-              {haiku && <DetailRow label="7-Day Haiku" value={haiku?.utilization} resetAt={haiku?.resets_at} color="#10b981" />}
+              <DetailRow label="5-Hour Session" value={fiveHour?.utilization} resetAt={fiveHour?.resets_at} color="#7dd3fc" />
+              <DetailRow label="7-Day All Models" value={sevenDay?.utilization} resetAt={sevenDay?.resets_at} color="#c4b5fd" />
+              {sonnet && <DetailRow label="7-Day Sonnet" value={sonnet?.utilization} resetAt={sonnet?.resets_at} color="#67e8f9" />}
+              {opus && <DetailRow label="7-Day Opus" value={opus?.utilization} resetAt={opus?.resets_at} color="#fcd34d" />}
+              {haiku && <DetailRow label="7-Day Haiku" value={haiku?.utilization} resetAt={haiku?.resets_at} color="#6ee7b7" />}
             </div>
           </div>
 
           {extra?.is_enabled && (
-            <div style={S.card}>
+            <div style={S.card} className="animate-fade-in">
               <h3 style={S.secT}>Extra Usage</h3>
-              <p style={{ fontSize: 12, color: "#94a3b8", margin: 0 }}>
-                Used: ${extra.used_credits?.toFixed(2) ?? "0.00"} / Limit: ${extra.monthly_limit?.toFixed(2) ?? "—"}
-              </p>
-              {extraOver > 0 && (
-                <p style={{ fontSize: 12, color: "#fca5a5", margin: "6px 0 0", fontWeight: 500 }}>
-                  Over limit by ${extraOver.toFixed(2)}
-                </p>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12 }}>
+                <div>
+                  <div style={{ fontSize: 22, fontWeight: 500, color: "#f5f5f7", fontFamily: "'Inter', sans-serif", letterSpacing: "-0.02em" }}>
+                    ${extra.used_credits?.toFixed(2) ?? "0.00"}
+                  </div>
+                  <div style={{ fontSize: 11, color: "#a1a1aa", marginTop: 4 }}>
+                    of ${extra.monthly_limit?.toFixed(2) ?? "—"} monthly cap
+                  </div>
+                </div>
+                {extraOver > 0 ? (
+                  <div style={{
+                    padding: "6px 12px",
+                    borderRadius: 999,
+                    background: "rgba(251, 113, 133, 0.12)",
+                    border: "1px solid rgba(251, 113, 133, 0.3)",
+                    color: "#fecdd3",
+                    fontSize: 11,
+                    fontWeight: 600,
+                  }}>
+                    Over by ${extraOver.toFixed(2)}
+                  </div>
+                ) : (
+                  <div style={{
+                    padding: "6px 12px",
+                    borderRadius: 999,
+                    background: "rgba(110, 231, 183, 0.08)",
+                    border: "1px solid rgba(110, 231, 183, 0.22)",
+                    color: "#a7f3d0",
+                    fontSize: 11,
+                    fontWeight: 600,
+                  }}>
+                    Within cap
+                  </div>
+                )}
+              </div>
+              {extra.monthly_limit > 0 && (
+                <div style={{ marginTop: 14, height: 6, borderRadius: 999, background: "rgba(255,255,255,0.06)", overflow: "hidden" }}>
+                  <div style={{
+                    height: "100%",
+                    width: `${Math.min(100, (extra.used_credits / extra.monthly_limit) * 100)}%`,
+                    background: extraOver > 0
+                      ? "linear-gradient(90deg, #fb7185, #f472b6)"
+                      : "linear-gradient(90deg, #7dd3fc, #c4b5fd)",
+                    transition: "width 0.9s cubic-bezier(0.16, 1, 0.3, 1)",
+                    boxShadow: extraOver > 0 ? "0 0 12px rgba(251, 113, 133, 0.5)" : "0 0 12px rgba(125, 211, 252, 0.4)",
+                  }} />
+                </div>
               )}
             </div>
           )}
 
-          {/* Mini Chart */}
           {chartData.length > 1 && (
-            <div style={S.card}>
+            <div style={S.card} className="animate-fade-in">
               <h3 style={S.secT}>Last {chartData.length} Polls</h3>
-              <div style={{ width: "100%", height: 120 }}>
+              <div style={{ width: "100%", height: 140 }}>
                 <ResponsiveContainer>
-                  <AreaChart data={chartData} margin={{ top: 4, right: 4, bottom: 0, left: -24 }}>
+                  <AreaChart data={chartData} margin={{ top: 4, right: 4, bottom: 0, left: -22 }}>
                     <defs>
-                      <linearGradient id="gs" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor="#3b82f6" stopOpacity={0.25} /><stop offset="100%" stopColor="#3b82f6" stopOpacity={0} />
+                      <linearGradient id="gsMini" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="#7dd3fc" stopOpacity={0.35} />
+                        <stop offset="100%" stopColor="#7dd3fc" stopOpacity={0} />
                       </linearGradient>
                     </defs>
-                    <XAxis dataKey="t" axisLine={false} tickLine={false} tick={{ fill: "#334155", fontSize: 9 }} />
-                    <YAxis domain={[0, 100]} axisLine={false} tickLine={false} tick={{ fill: "#334155", fontSize: 9 }} />
-                    <Tooltip contentStyle={{ background: "#1e293b", border: "1px solid #253047", borderRadius: 8, color: "#e2e8f0", fontSize: 11 }} />
-                    <Area type="monotone" dataKey="session" stroke="#3b82f6" strokeWidth={2} fill="url(#gs)" dot={{ r: 2, fill: "#3b82f6" }} name="Session %" />
-                    <Area type="monotone" dataKey="weekly" stroke="#8b5cf6" strokeWidth={1.5} fill="none" dot={{ r: 1.5, fill: "#8b5cf6" }} name="Weekly %" strokeDasharray="4 3" />
+                    <XAxis dataKey="t" axisLine={false} tickLine={false} tick={{ fill: "rgba(255,255,255,0.25)", fontSize: 9 }} />
+                    <YAxis domain={[0, 100]} axisLine={false} tickLine={false} tick={{ fill: "rgba(255,255,255,0.25)", fontSize: 9 }} />
+                    <Tooltip
+                      contentStyle={{
+                        background: "rgba(10, 12, 20, 0.85)",
+                        backdropFilter: "blur(16px)",
+                        border: "1px solid rgba(255,255,255,0.12)",
+                        borderRadius: 10,
+                        color: "#f5f5f7",
+                        fontSize: 11,
+                        boxShadow: "0 8px 24px rgba(0,0,0,0.5)",
+                      }}
+                    />
+                    <Area type="monotone" dataKey="session" stroke="#7dd3fc" strokeWidth={2} fill="url(#gsMini)" dot={{ r: 2, fill: "#7dd3fc" }} name="Session %" />
+                    <Area type="monotone" dataKey="weekly" stroke="#c4b5fd" strokeWidth={1.5} fill="none" dot={{ r: 1.5, fill: "#c4b5fd" }} name="Weekly %" strokeDasharray="4 3" />
                   </AreaChart>
                 </ResponsiveContainer>
               </div>
@@ -411,62 +541,95 @@ export default function App() {
         <>
           {chartData.length > 1 ? (
             <>
-              <div style={S.card}>
+              <div style={S.card} className="animate-fade-in">
                 <h3 style={S.secT}>Session % Over Time</h3>
-                <div style={{ width: "100%", height: 200 }}>
+                <div style={{ width: "100%", height: 220 }}>
                   <ResponsiveContainer>
-                    <AreaChart data={chartData} margin={{ top: 8, right: 4, bottom: 0, left: -20 }}>
+                    <AreaChart data={chartData} margin={{ top: 8, right: 4, bottom: 0, left: -18 }}>
                       <defs>
                         <linearGradient id="gsFull" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="0%" stopColor="#3b82f6" stopOpacity={0.3} /><stop offset="100%" stopColor="#3b82f6" stopOpacity={0} />
+                          <stop offset="0%" stopColor="#7dd3fc" stopOpacity={0.38} />
+                          <stop offset="100%" stopColor="#7dd3fc" stopOpacity={0} />
                         </linearGradient>
                       </defs>
-                      <XAxis dataKey="t" axisLine={false} tickLine={false} tick={{ fill: "#475569", fontSize: 10 }} />
-                      <YAxis domain={[0, 100]} axisLine={false} tickLine={false} tick={{ fill: "#475569", fontSize: 10 }} />
-                      <Tooltip contentStyle={{ background: "#1e293b", border: "1px solid #253047", borderRadius: 8, color: "#e2e8f0", fontSize: 12 }} />
-                      <Area type="monotone" dataKey="session" stroke="#3b82f6" strokeWidth={2} fill="url(#gsFull)" dot={{ r: 3, fill: "#3b82f6" }} name="Session %" />
-                      <Area type="monotone" dataKey="weekly" stroke="#8b5cf6" strokeWidth={2} fill="none" dot={{ r: 2.5, fill: "#8b5cf6" }} name="Weekly %" strokeDasharray="5 3" />
+                      <CartesianGrid stroke="rgba(255,255,255,0.04)" vertical={false} />
+                      <XAxis dataKey="t" axisLine={false} tickLine={false} tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} />
+                      <YAxis domain={[0, 100]} axisLine={false} tickLine={false} tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} />
+                      <Tooltip
+                        contentStyle={{
+                          background: "rgba(10, 12, 20, 0.85)",
+                          backdropFilter: "blur(16px)",
+                          border: "1px solid rgba(255,255,255,0.12)",
+                          borderRadius: 10,
+                          color: "#f5f5f7",
+                          fontSize: 12,
+                          boxShadow: "0 8px 24px rgba(0,0,0,0.5)",
+                        }}
+                      />
+                      <Area type="monotone" dataKey="session" stroke="#7dd3fc" strokeWidth={2.2} fill="url(#gsFull)" dot={{ r: 3, fill: "#7dd3fc" }} name="Session %" />
+                      <Area type="monotone" dataKey="weekly" stroke="#c4b5fd" strokeWidth={2} fill="none" dot={{ r: 2.5, fill: "#c4b5fd" }} name="Weekly %" strokeDasharray="5 3" />
                     </AreaChart>
                   </ResponsiveContainer>
                 </div>
-                <div style={{ display: "flex", gap: 16, justifyContent: "center", marginTop: 8 }}>
-                  <span style={S.leg}><span style={{ width: 8, height: 8, borderRadius: 99, background: "#3b82f6", display: "inline-block" }} /> Session (5hr)</span>
-                  <span style={S.leg}><span style={{ width: 12, height: 2, background: "#8b5cf6", display: "inline-block" }} /> Weekly (7d)</span>
+                <div style={{ display: "flex", gap: 18, justifyContent: "center", marginTop: 12 }}>
+                  <span style={S.leg}><span style={{ width: 8, height: 8, borderRadius: 99, background: "#7dd3fc", display: "inline-block", boxShadow: "0 0 8px #7dd3fc" }} /> Session (5hr)</span>
+                  <span style={S.leg}><span style={{ width: 12, height: 2, background: "#c4b5fd", display: "inline-block", boxShadow: "0 0 6px #c4b5fd" }} /> Weekly (7d)</span>
                 </div>
               </div>
 
-              <div style={S.card}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-                  <h3 style={{ ...S.secT, margin: 0 }}>Poll Log ({history.length} entries)</h3>
+              <div style={S.card} className="animate-fade-in">
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+                  <h3 style={{ ...S.secT, margin: 0 }}>Poll Log ({history.length})</h3>
                   <button
                     onClick={downloadHistoryCsv}
-                    style={{ background: "none", border: "1px solid #333", borderRadius: 4, color: "#a1a1aa", cursor: "pointer", fontSize: 10, padding: "3px 8px", fontFamily: "inherit", transition: "background 0.1s" }}
-                    onMouseOver={e => e.target.style.background = "#222"}
-                    onMouseOut={e => e.target.style.background = "none"}
+                    style={{
+                      background: "rgba(255,255,255,0.04)",
+                      border: "1px solid rgba(255,255,255,0.1)",
+                      borderRadius: 8,
+                      color: "#d4d4d8",
+                      cursor: "pointer",
+                      fontSize: 11,
+                      padding: "5px 12px",
+                      fontFamily: "inherit",
+                      fontWeight: 500,
+                      transition: "background 0.2s, border-color 0.2s",
+                    }}
+                    onMouseOver={e => { e.currentTarget.style.background = "rgba(255,255,255,0.08)"; e.currentTarget.style.borderColor = "rgba(255,255,255,0.18)"; }}
+                    onMouseOut={e => { e.currentTarget.style.background = "rgba(255,255,255,0.04)"; e.currentTarget.style.borderColor = "rgba(255,255,255,0.1)"; }}
                   >
                     Export CSV
                   </button>
                 </div>
-                <div style={{ maxHeight: 250, overflow: "auto" }}>
+                <div style={{ maxHeight: 280, overflow: "auto", paddingRight: 4 }}>
                   {history.slice(0, 50).map((h, i) => (
-                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", borderBottom: "1px solid #141f30", fontSize: 11 }}>
-                      <span style={{ color: "#475569", minWidth: 58 }}>{new Date(h.ts).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: true })}</span>
-                      <span style={{ color: "#3b82f6", fontWeight: 700, minWidth: 40 }}>S:{h.s != null ? Math.round(h.s) : "—"}%</span>
-                      <span style={{ color: "#8b5cf6", fontWeight: 700, minWidth: 40 }}>W:{h.w != null ? Math.round(h.w) : "—"}%</span>
+                    <div key={i} style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 12,
+                      padding: "8px 0",
+                      borderBottom: "1px solid rgba(255,255,255,0.04)",
+                      fontSize: 11,
+                      fontFamily: "'JetBrains Mono', monospace",
+                    }}>
+                      <span style={{ color: "#71717a", minWidth: 62 }}>
+                        {new Date(h.ts).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: true })}
+                      </span>
+                      <span style={{ color: "#7dd3fc", fontWeight: 600, minWidth: 46 }}>S {h.s != null ? Math.round(h.s) : "—"}%</span>
+                      <span style={{ color: "#c4b5fd", fontWeight: 600, minWidth: 46 }}>W {h.w != null ? Math.round(h.w) : "—"}%</span>
                     </div>
                   ))}
                 </div>
               </div>
             </>
           ) : (
-            <div style={{ ...S.card, textAlign: "center", padding: 40, color: "#475569", fontSize: 13 }}>
-              Collecting data... charts will appear after a few polls.
+            <div style={{ ...S.card, textAlign: "center", padding: 48, color: "#a1a1aa", fontSize: 13 }}>
+              Collecting data… charts will appear after a few polls.
             </div>
           )}
         </>
       )}
 
-      <div style={{ textAlign: "center", fontSize: 9, color: "#222", padding: "12px 0" }}>
+      <div style={{ textAlign: "center", fontSize: 10, color: "#52525b", padding: "16px 0 8px", fontFamily: "'JetBrains Mono', monospace" }}>
         Auto-refreshes every {POLL_INTERVAL_SEC}s · Data persists across sessions
       </div>
     </div>
