@@ -3,13 +3,12 @@
 Know how much Claude quota you have left, how fast you are burning it, whether you will run
 out before the reset — and what Claude Code is doing right now — without leaving the menu bar.
 
-Three clients, one data model:
+Two clients, one data model:
 
 | | |
 |---|---|
 | **Native macOS menu bar app** | SwiftUI `MenuBarExtra`, notifications, local history, Claude Code activity. The main event. |
 | **Web dashboard** | React + Vite. Gauges, charts, CSV export. Runs anywhere. |
-| **SwiftBar plugin** | Bash + `python3`. Zero build, zero dependencies. Kept as a fallback. |
 
 | Plenty left | Running out | Weekly is the constraint |
 |---|---|---|
@@ -114,14 +113,6 @@ npm install && npm run dev
 
 Then open http://localhost:5173. Deployed builds work through the `vercel.json` rewrite.
 
-### SwiftBar plugin
-
-Copy or symlink `swiftbar/claude-usage.2m.sh` into your SwiftBar plugins folder and make it
-executable. It refreshes every two minutes.
-
-> If you already have it symlinked, note that the link breaks when this repo moves — re-point
-> it after moving the folder.
-
 ---
 
 ## Authentication
@@ -132,7 +123,7 @@ The native app looks for a token in this order:
 2. **Claude Code's credentials** — `Claude Code-credentials` in your login keychain. If you are
    signed in to Claude Code, the app just works. macOS asks your permission the first time it
    reads the item; that prompt is the consent point.
-3. **`~/.claude-usage-token`** — the plaintext file v1 and the SwiftBar plugin use.
+3. **`~/.claude-usage-token`** — the plaintext file v1 used. Still read, for compatibility.
 
 The web dashboard needs a token pasted in (browsers cannot read your keychain). Get one with:
 
@@ -168,7 +159,7 @@ configuration and no cache, so responses are not written to disk behind your bac
 | `last-usage.json` | the most recent parsed snapshot, so a cold launch isn't blank |
 | `sessions/*.json` | Claude Code session metadata, one file per session |
 | `events.jsonl` | the last 200 hook **event names** and timestamps |
-| `activity.json` | a rollup for other consumers (the SwiftBar plugin reads it) |
+| `activity.json` | a rollup for anything else you want to wire up (status bars, scripts) |
 | `notifications.json` | which alerts have already fired, so they don't repeat |
 
 **The Claude Code hook records:** session id, working directory, project folder name, event
@@ -190,7 +181,6 @@ claude-usage-tracker/
 ├── src/                              React dashboard
 │   ├── lib/usageModel.js             ← shared normalizer (JS twin of the Swift parser)
 │   ├── App.jsx  components/  utils/
-├── swiftbar/claude-usage.2m.sh       fallback plugin
 ├── macos/                            native menu bar app (SwiftPM)
 │   ├── Package.swift
 │   ├── hooks/claude-activity-hook    observability-only Claude Code hook
@@ -287,12 +277,6 @@ swift test                     # 87 tests, swift-testing
 ./scripts/test-hook.sh
 ```
 
-The SwiftBar plugin can be exercised without spending an API call:
-
-```bash
-CLAUDE_USAGE_FIXTURE=macos/ClaudeUsage/Tests/Fixtures/usage-current.json bash swiftbar/claude-usage.2m.sh
-```
-
 Test fixtures in `macos/ClaudeUsage/Tests/Fixtures/` are **sanitized** — no real identifiers,
 no tokens. They cover the current shape, the legacy shape, an empty payload, malformed
 entries, and a deliberately unknown future shape.
@@ -351,9 +335,6 @@ rm -rf ~/.claude-usage-tracker
 
 # Legacy plaintext token, if you used it
 rm -f ~/.claude-usage-token
-
-# SwiftBar plugin
-rm -f "$HOME/SwiftBar/claude-usage.2m.sh"    # adjust to your plugin folder
 ```
 
 The keychain item is removed from Settings › General › Remove stored token, or with:

@@ -164,7 +164,6 @@ surfaced only if they ever appear inside `limits[]` with a real `kind`/`scope`.
 claude-usage-tracker/
 ├── src/                      React dashboard (kept, upgraded)
 │   └── lib/usageModel.js     ← NEW: shared normalizer (JS port of the Swift one)
-├── swiftbar/                 SwiftBar plugin (kept as lightweight fallback)
 ├── macos/                    ← NEW: native SwiftUI menu bar app (SwiftPM, no Xcode needed)
 │   ├── Package.swift
 │   ├── hooks/claude-activity-hook          observability-only Claude Code hook
@@ -292,7 +291,7 @@ events.jsonl                  ring buffer, last 200 event *names* + timestamps
 ```
 Each hook invocation touches **only its own session file**, so concurrent sessions never
 contend for a lock. The app aggregates by reading the directory. `activity.json` is written as
-a convenience rollup for third-party consumers (e.g. SwiftBar) but is not the app's source of
+a convenience rollup for third-party consumers but is not the app's source of
 truth.
 
 **Session record** (metadata only):
@@ -402,7 +401,7 @@ other than `api.anthropic.com`. No telemetry, no analytics, no crash reporting.
   "unknown", not "expired"). macOS prompts for keychain access on first read; this is the
   documented, user-visible consent point. The token is never copied out of the keychain onto
   disk.
-- **Legacy file** `~/.claude-usage-token` is still read last, for SwiftBar parity.
+- **Legacy file** `~/.claude-usage-token` is still read last, for v1 compatibility.
 - The token is held in memory as a `String` used only to build an `Authorization` header. It
   is never logged, never written to history, never included in debug exports. Debug mode
   dumps the *response* JSON only, with `Authorization` scrubbed and
@@ -449,5 +448,5 @@ Last-known-good is persisted so a cold launch shows real numbers with an explici
 6. SwiftUI menu bar + popover + settings ✔
 7. Bundling script ✔
 8. React dashboard upgrade to the shared model ✔
-9. SwiftBar refresh ✔
+9. ~~SwiftBar refresh~~ — plugin retired once the native app proved out ✔
 10. Self-review, fixes, README ✔

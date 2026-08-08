@@ -34,7 +34,7 @@ public struct ResolvedToken: Sendable {
 /// Order of preference:
 ///  1. A token the user pasted into this app, held in the login keychain.
 ///  2. Claude Code's own credentials — the same OAuth grant, already on this machine.
-///  3. The legacy `~/.claude-usage-token` file the SwiftBar plugin uses.
+///  3. The legacy `~/.claude-usage-token` file, for compatibility with v1.
 ///
 /// The value is never logged, never written to history, and never included in a debug export.
 public final class TokenStore: @unchecked Sendable {
