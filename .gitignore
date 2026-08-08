@@ -32,3 +32,12 @@ dist-ssr
 *.sw?
 .vercel
 .claude
+
+# Swift / SwiftPM
+macos/.build/
+macos/build/
+*.xcuserdatad
+.swiftpm/
+
+# Finder duplicate files
+*[0-9].json.orig

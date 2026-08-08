@@ -1,0 +1,21 @@
+{
+  "limits": [
+    {
+      "kind": "monthly_experimental",
+      "group": "monthly",
+      "percent": 7,
+      "resets_at": "2026-09-01T00:00:00Z",
+      "scope": { "model": { "display_name": "Nebula", "id": "mdl_abc" }, "surface": "cowork" },
+      "is_active": true,
+      "severity": "warning",
+      "brand_new_field": { "nested": [1, 2, 3] }
+    },
+    { "kind": "session", "group": "session", "percent": "55", "resets_at": "2026-08-08T20:00:00Z" }
+  ],
+  "spend": {
+    "used": { "amount_minor": 12345, "currency": "EUR", "exponent": 3 },
+    "limit": { "amount_minor": 50000, "currency": "EUR", "exponent": 3 },
+    "enabled": true
+  },
+  "totally_new_top_level_key": { "whatever": true }
+}
