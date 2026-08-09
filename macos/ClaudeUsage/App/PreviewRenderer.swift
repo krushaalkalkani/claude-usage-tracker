@@ -23,7 +23,7 @@ enum PreviewRenderer {
                 render(scenario, dark: dark, into: outDir)
             }
         }
-        for pane in [SettingsView.Pane.general, .notifications, .privacy] {
+        for pane in SettingsView.Pane.allCases {
             for dark in [false, true] {
                 renderSettings(pane, dark: dark, into: outDir)
             }
