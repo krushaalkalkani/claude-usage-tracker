@@ -1,0 +1,328 @@
+#!/usr/bin/env python3
+"""Claude Code activity hook for Claude Usage Tracker.
+
+OBSERVABILITY ONLY. This hook:
+  * never writes to stdout (so it can never inject context or a decision),
+  * always exits 0 (so it can never block or fail a turn),
+  * is registered with "async": true (so Claude Code does not wait for it),
+  * records METADATA ONLY.
+
+What it records: session id, working directory, project folder name, event name, tool NAME,
+permission mode, effort level, agent type, and counters.
+
+What it deliberately never reads or stores: the user's prompt (`user_input`), the assistant's
+reply (`last_assistant_message`), tool arguments (`tool_input`), and tool results
+(`tool_response`). The code to persist those does not exist in this file.
+
+State lives in ~/.claude-usage-tracker/sessions/<session_id>.json — one file per session, so
+concurrent Claude Code sessions never contend for the same file.
+"""
+
+import calendar
+import json
+import os
+import sys
+import time
+import uuid
+
+SCHEMA = 1
+ROOT = os.path.join(os.path.expanduser("~"), ".claude-usage-tracker")
+SESSIONS = os.path.join(ROOT, "sessions")
+EVENTS = os.path.join(ROOT, "events.jsonl")
+ROLLUP = os.path.join(ROOT, "activity.json")
+MAX_EVENTS = 200
+
+# Fields copied verbatim from the hook payload. Everything not on this list is ignored.
+SAFE_FIELDS = ("session_id", "cwd", "hook_event_name", "permission_mode", "agent_type", "source")
+
+
+def now_iso():
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def atomic_write(path, payload):
+    tmp = "%s.%s.tmp" % (path, uuid.uuid4().hex[:8])
+    with open(tmp, "w") as fh:
+        json.dump(payload, fh, separators=(",", ":"))
+    os.replace(tmp, path)
+
+
+def session_path(session_id):
+    # Session ids are UUIDs from Claude Code, but sanitize anyway: this string becomes a
+    # filename, and a path separator in it would let a write escape the sessions directory.
+    safe = "".join(c for c in str(session_id) if c.isalnum() or c in "-_")[:80]
+    return os.path.join(SESSIONS, (safe or "unknown") + ".json")
+
+
+def load(path):
+    try:
+        with open(path) as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def append_event(event, session_id):
+    """Append the event NAME (never its content) to a small ring buffer."""
+    line = json.dumps({"t": now_iso(), "e": event, "s": str(session_id)[:8]}, separators=(",", ":"))
+    try:
+        with open(EVENTS, "a") as fh:
+            fh.write(line + "\n")
+        # Trim occasionally rather than on every event.
+        if os.path.getsize(EVENTS) > MAX_EVENTS * 120:
+            with open(EVENTS) as fh:
+                lines = fh.readlines()[-MAX_EVENTS:]
+            with open(EVENTS + ".tmp", "w") as fh:
+                fh.writelines(lines)
+            os.replace(EVENTS + ".tmp", EVENTS)
+    except Exception:
+        pass
+
+
+def write_rollup():
+    """A convenience aggregate for non-Swift consumers (e.g. the SwiftBar plugin).
+
+    The menu bar app does not read this file; it aggregates the sessions directory itself.
+    """
+    sessions = []
+    try:
+        for name in os.listdir(SESSIONS):
+            if not name.endswith(".json"):
+                continue
+            rec = load(os.path.join(SESSIONS, name))
+            if rec:
+                sessions.append(rec)
+    except Exception:
+        return
+
+    busy = {"working", "thinking", "running_tool", "running_agents", "compacting"}
+    active = [s for s in sessions if s.get("status") in busy]
+    attention = [s for s in sessions if s.get("needsAttention")]
+    primary = (attention or active or sessions or [None])[0]
+
+    try:
+        atomic_write(ROLLUP, {
+            "schema": SCHEMA,
+            "updatedAt": now_iso(),
+            "sessionCount": len(sessions),
+            "activeCount": len(active),
+            "attentionCount": len(attention),
+            "activeAgents": sum(max(0, s.get("activeAgents", 0)) for s in sessions),
+            "status": (primary or {}).get("status", "idle"),
+            "project": (primary or {}).get("project"),
+            "needsAttention": bool(attention),
+        })
+    except Exception:
+        pass
+
+
+def apply_event(rec, payload, event):
+    """Fold one event into the session record."""
+    rec["schema"] = SCHEMA
+    rec["sessionId"] = payload.get("session_id") or rec.get("sessionId") or "unknown"
+    rec["lastEvent"] = event
+    rec["lastEventAt"] = now_iso()
+    rec["updatedAt"] = now_iso()
+
+    cwd = payload.get("cwd")
+    if cwd:
+        rec["cwd"] = cwd
+        rec["project"] = os.path.basename(cwd.rstrip("/")) or cwd
+
+    if payload.get("permission_mode"):
+        rec["permissionMode"] = payload["permission_mode"]
+    effort = payload.get("effort")
+    if isinstance(effort, dict) and effort.get("level"):
+        rec["effort"] = effort["level"]
+
+    rec.setdefault("activeAgents", 0)
+    rec.setdefault("openTasks", 0)
+    rec.setdefault("needsAttention", False)
+
+    def attend(reason):
+        rec["needsAttention"] = True
+        rec["attentionReason"] = reason
+
+    def clear_attention():
+        rec["needsAttention"] = False
+        rec["attentionReason"] = None
+
+    if event == "SessionStart":
+        rec["startedAt"] = rec.get("startedAt") or now_iso()
+        rec["status"] = "idle"
+        rec["activeAgents"] = 0
+        rec["openTasks"] = 0
+        rec["lastError"] = None
+        # Exec-form hooks are spawned directly by Claude Code, so our parent IS the
+        # Claude Code process. The app uses this to reap records from dead sessions.
+        rec["claudePid"] = os.getppid()
+        if payload.get("model"):
+            rec["model"] = payload["model"]
+        clear_attention()
+
+    elif event == "UserPromptSubmit":
+        rec["status"] = "working"
+        rec["turnStartedAt"] = now_iso()
+        rec["lastError"] = None
+        clear_attention()
+
+    elif event == "PreToolUse":
+        rec["status"] = "running_tool"
+        rec["statusDetail"] = payload.get("tool_name")  # tool NAME only, never its input
+
+    elif event in ("PostToolUse", "PostToolBatch"):
+        rec["status"] = "running_agents" if rec.get("activeAgents", 0) > 0 else "working"
+        rec["statusDetail"] = None
+
+    elif event == "PostToolUseFailure":
+        rec["status"] = "running_agents" if rec.get("activeAgents", 0) > 0 else "working"
+        rec["statusDetail"] = None
+        rec["lastError"] = payload.get("tool_name")
+
+    elif event in ("PermissionRequest", "PermissionDenied"):
+        rec["status"] = "permission_required"
+        attend("Permission requested")
+
+    elif event == "Notification":
+        kind = payload.get("type") or ""
+        if kind == "permission_prompt":
+            rec["status"] = "permission_required"
+            attend("Permission requested")
+        elif kind == "idle_prompt":
+            rec["status"] = "waiting_for_user"
+            attend("Waiting for input")
+        elif kind == "elicitation_dialog":
+            rec["status"] = "waiting_for_user"
+            attend("Input requested")
+        # Other notification types (e.g. auth_success) are recorded but change no status.
+
+    elif event == "SubagentStart":
+        rec["activeAgents"] = rec.get("activeAgents", 0) + 1
+        rec["status"] = "running_agents"
+        rec["statusDetail"] = payload.get("agent_type")
+
+    elif event == "SubagentStop":
+        rec["activeAgents"] = max(0, rec.get("activeAgents", 0) - 1)
+        if rec["activeAgents"] == 0 and rec.get("status") == "running_agents":
+            rec["status"] = "working"
+            rec["statusDetail"] = None
+
+    elif event == "TaskCreated":
+        rec["openTasks"] = rec.get("openTasks", 0) + 1
+
+    elif event == "TaskCompleted":
+        rec["openTasks"] = max(0, rec.get("openTasks", 0) - 1)
+
+    elif event == "TeammateIdle":
+        rec["status"] = "waiting_for_user"
+        attend("Teammate idle")
+
+    elif event == "PreCompact":
+        rec["status"] = "compacting"
+
+    elif event == "PostCompact":
+        rec["status"] = "working"
+
+    elif event == "Stop":
+        started = rec.get("turnStartedAt")
+        if started:
+            try:
+                # timegm is the correct inverse of gmtime; mktime would apply the local
+                # offset twice and report turn durations hours off.
+                begun = calendar.timegm(time.strptime(started, "%Y-%m-%dT%H:%M:%SZ"))
+                rec["lastTurnSeconds"] = round(max(0.0, time.time() - begun), 1)
+            except Exception:
+                rec["lastTurnSeconds"] = None
+        rec["status"] = "completed"
+        rec["statusDetail"] = None
+        rec["lastCompletedAt"] = now_iso()
+        rec["turnStartedAt"] = None
+        rec["activeAgents"] = 0
+        clear_attention()
+
+    elif event == "StopFailure":
+        # The payload's field name for the error class is not documented, so the settings
+        # entry also passes it positionally (see install-hooks.sh, which registers a
+        # `rate_limit`-matched hook with an explicit hint argument).
+        reason = (
+            rec.pop("_hint", None)
+            or payload.get("reason")
+            or payload.get("error_type")
+            or payload.get("error")
+            or ""
+        )
+        if "rate" in str(reason).lower():
+            rec["status"] = "rate_limited"
+            attend("Rate limited")
+        else:
+            rec["status"] = "error"
+            attend("Turn failed")
+        rec["lastError"] = str(reason)[:60] or "error"
+        rec["turnStartedAt"] = None
+
+    return rec
+
+
+def main():
+    try:
+        raw = sys.stdin.read()
+    except Exception:
+        return
+    if not raw.strip():
+        return
+
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        return
+    if not isinstance(payload, dict):
+        return
+
+    event = payload.get("hook_event_name") or (sys.argv[1] if len(sys.argv) > 1 else None)
+    if not event:
+        return
+
+    session_id = payload.get("session_id")
+    if not session_id:
+        return
+
+    os.makedirs(SESSIONS, exist_ok=True)
+    try:
+        os.chmod(ROOT, 0o700)
+    except Exception:
+        pass
+
+    path = session_path(session_id)
+
+    if event == "SessionEnd":
+        try:
+            os.remove(path)
+        except Exception:
+            pass
+        append_event(event, session_id)
+        write_rollup()
+        return
+
+    rec = load(path)
+    # Optional positional hint (argv[2]) lets a matcher-specific registration tell us
+    # something the payload does not carry — currently only the StopFailure error class.
+    if len(sys.argv) > 2 and sys.argv[2]:
+        rec["_hint"] = sys.argv[2]
+    rec = apply_event(rec, payload, event)
+    rec.pop("_hint", None)
+    try:
+        atomic_write(path, rec)
+    except Exception:
+        pass
+    append_event(event, session_id)
+    write_rollup()
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception:
+        # An observability hook must never surface a failure into the session.
+        pass
+    sys.exit(0)

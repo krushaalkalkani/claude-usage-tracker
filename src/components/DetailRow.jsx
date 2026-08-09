@@ -1,6 +1,6 @@
 import { timeUntil } from "../utils/time";
 
-export function DetailRow({ label, value, resetAt, color }) {
+export function DetailRow({ label, value, resetAt, color, badge }) {
   const v = value != null ? Math.round(value) : null;
   if (v === null) return null;
 
@@ -12,7 +12,24 @@ export function DetailRow({ label, value, resetAt, color }) {
 
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 14, padding: "14px 0", borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
-      <span style={{ fontSize: 13, color: "#d4d4d8", minWidth: 120, fontWeight: 500 }}>{label}</span>
+      <span style={{ fontSize: 13, color: "#d4d4d8", minWidth: 120, fontWeight: 500, display: "flex", alignItems: "center", gap: 6 }}>
+        {label}
+        {badge && (
+          <span style={{
+            fontSize: 9,
+            fontWeight: 700,
+            letterSpacing: "0.06em",
+            textTransform: "uppercase",
+            padding: "2px 6px",
+            borderRadius: 999,
+            background: "rgba(125, 211, 252, 0.14)",
+            border: "1px solid rgba(125, 211, 252, 0.3)",
+            color: "#7dd3fc",
+          }}>
+            {badge}
+          </span>
+        )}
+      </span>
       <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 12 }}>
         <div style={{ flex: 1, height: 6, borderRadius: 999, background: "rgba(255,255,255,0.06)", overflow: "hidden", boxShadow: "inset 0 1px 2px rgba(0,0,0,0.3)" }}>
           <div style={{

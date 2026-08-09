@@ -1,0 +1,91 @@
+{
+  "five_hour": {
+    "utilization": 18.0,
+    "resets_at": "2026-08-08T20:00:00.196578+00:00",
+    "limit_dollars": null,
+    "used_dollars": null,
+    "remaining_dollars": null
+  },
+  "seven_day": {
+    "utilization": 32.0,
+    "resets_at": "2026-08-13T20:00:00.196599+00:00",
+    "limit_dollars": null,
+    "used_dollars": null,
+    "remaining_dollars": null
+  },
+  "seven_day_oauth_apps": null,
+  "seven_day_opus": null,
+  "seven_day_sonnet": null,
+  "seven_day_cowork": null,
+  "seven_day_omelette": null,
+  "tangelo": null,
+  "iguana_necktie": null,
+  "omelette_promotional": null,
+  "nimbus_quill": {
+    "utilization": 0.0,
+    "resets_at": null,
+    "limit_dollars": null,
+    "used_dollars": null,
+    "remaining_dollars": null
+  },
+  "cinder_cove": null,
+  "amber_ladder": null,
+  "extra_usage": {
+    "is_enabled": false,
+    "monthly_limit": 3000,
+    "used_credits": 3303.0,
+    "utilization": 100.0,
+    "currency": "USD",
+    "decimal_places": 2,
+    "disabled_reason": "org_level_disabled_until",
+    "user_disabled": false,
+    "spend_limit_reached": true,
+    "credits_ever_enabled": true,
+    "daily": null,
+    "weekly": null
+  },
+  "limits": [
+    {
+      "kind": "session",
+      "group": "session",
+      "percent": 18,
+      "severity": "normal",
+      "resets_at": "2026-08-08T20:00:00.196578+00:00",
+      "scope": null,
+      "is_active": false
+    },
+    {
+      "kind": "weekly_all",
+      "group": "weekly",
+      "percent": 32,
+      "severity": "normal",
+      "resets_at": "2026-08-13T20:00:00.196599+00:00",
+      "scope": null,
+      "is_active": false
+    },
+    {
+      "kind": "weekly_scoped",
+      "group": "weekly",
+      "percent": 45,
+      "severity": "normal",
+      "resets_at": "2026-08-13T20:00:00.196716+00:00",
+      "scope": { "model": { "display_name": "Fable", "id": null }, "surface": null },
+      "is_active": true
+    }
+  ],
+  "spend": {
+    "used": { "amount_minor": 3303, "currency": "USD", "exponent": 2 },
+    "limit": { "amount_minor": 3000, "currency": "USD", "exponent": 2 },
+    "percent": 100,
+    "severity": "critical",
+    "enabled": false,
+    "disabled_reason": "org_level_disabled_until",
+    "cap": { "money": null, "credits": { "amount_minor": 3000, "exponent": 2 } },
+    "balance": null,
+    "auto_reload": null,
+    "disclaimer": "Extra usage is billed separately. Amounts shown are estimates and may lag actual billing.",
+    "can_purchase_credits": false,
+    "can_toggle": false
+  },
+  "member_dashboard_available": false
+}

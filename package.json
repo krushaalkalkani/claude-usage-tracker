@@ -1,15 +1,18 @@
 {
   "name": "claude-usage-tracker",
-  "version": "1.0.0",
-  "description": "A beautiful, real-time React application to automatically track and visualize your Anthropic Claude usage rate limits.",
+  "version": "2.0.0",
+  "description": "Claude usage + Claude Code activity monitor: a native macOS menu bar app and a React dashboard.",
   "author": "Krushal Kalkani",
   "license": "MIT",
   "keywords": [
     "claude",
     "anthropic",
     "usage",
-    "tracker",
     "rate-limits",
+    "menubar",
+    "macos",
+    "swiftui",
+    "claude-code",
     "react",
     "dashboard"
   ],

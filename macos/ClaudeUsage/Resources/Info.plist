@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleExecutable</key>
+    <string>ClaudeUsage</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.krushal.claude-usage-tracker</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>ClaudeUsage</string>
+    <key>CFBundleDisplayName</key>
+    <string>Claude Usage</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>2.0.0</string>
+    <key>CFBundleVersion</key>
+    <string>2</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <!-- Menu-bar-only: no Dock icon, no window on launch. -->
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSHumanReadableCopyright</key>
+    <string>MIT licensed. Local-first: no telemetry, no analytics.</string>
+    <key>NSSupportsAutomaticTermination</key>
+    <false/>
+    <key>NSSupportsSuddenTermination</key>
+    <false/>
+    <!-- The notification fallback shells out to osascript when
+         UNUserNotificationCenter is unavailable. -->
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Claude Usage posts notifications through the system when the modern notification API is unavailable.</string>
+</dict>
+</plist>

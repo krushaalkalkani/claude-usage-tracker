@@ -5,7 +5,14 @@ import reactRefresh from 'eslint-plugin-react-refresh'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
 export default defineConfig([
-  globalIgnores(['dist']),
+  // `.claude/worktrees` holds throwaway checkouts of this same repo; linting them reports
+  // every problem two or three times over.
+  globalIgnores(['dist', '.claude/**', 'macos/**', 'node_modules/**']),
+  {
+    // Config files run in Node, not the browser.
+    files: ['vite.config.js', 'eslint.config.js'],
+    languageOptions: { globals: globals.node },
+  },
   {
     files: ['**/*.{js,jsx}'],
     extends: [
