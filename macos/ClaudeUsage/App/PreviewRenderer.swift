@@ -23,6 +23,11 @@ enum PreviewRenderer {
                 render(scenario, dark: dark, into: outDir)
             }
         }
+        for pane in [SettingsView.Pane.general, .notifications, .privacy] {
+            for dark in [false, true] {
+                renderSettings(pane, dark: dark, into: outDir)
+            }
+        }
         return true
     }
 
@@ -53,6 +58,28 @@ enum PreviewRenderer {
                 return
             }
             let url = dir.appendingPathComponent("\(scenario.name)-\(dark ? "dark" : "light").png")
+            try? png.write(to: url)
+            print(url.path)
+        }
+    }
+
+    @MainActor
+    private static func renderSettings(_ pane: SettingsView.Pane, dark: Bool, into dir: URL) {
+        let model = Scenario.all[1].makeModel()
+        let view = SettingsView(model: model, startPane: pane, rendersFlat: true)
+            .environment(\.colorScheme, dark ? .dark : .light)
+        let appearance = NSAppearance(named: dark ? .darkAqua : .aqua)!
+        appearance.performAsCurrentDrawingAppearance {
+            let renderer = ImageRenderer(content: view)
+            renderer.scale = 2
+            guard let image = renderer.nsImage,
+                  let tiff = image.tiffRepresentation,
+                  let rep = NSBitmapImageRep(data: tiff),
+                  let png = rep.representation(using: .png, properties: [:])
+            else { return }
+            let url = dir.appendingPathComponent(
+                "settings-\(pane.rawValue)-\(dark ? "dark" : "light").png"
+            )
             try? png.write(to: url)
             print(url.path)
         }
