@@ -38,6 +38,11 @@ enum DS {
     static let surfaceStroke = dynamicAlpha(light: (0x000000, 0.07), dark: (0xFFFFFF, 0.10))
     static let hairline = dynamicAlpha(light: (0x000000, 0.07), dark: (0xFFFFFF, 0.075))
 
+    /// Settings is a real window, not a menu-bar panel, so it gets opaque surfaces rather
+    /// than the scrim-over-material treatment.
+    static let windowBG = dynamic(light: 0xF4F4F6, dark: 0x1B1B1E)
+    static let card = dynamic(light: 0xFFFFFF, dark: 0x252529)
+
     // MARK: Ink
 
     static let ink = dynamic(light: 0x111114, dark: 0xF4F4F7)

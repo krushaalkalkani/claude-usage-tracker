@@ -14,8 +14,15 @@ Two clients, one data model:
 |---|---|---|
 | ![](docs/screenshots/healthy-dark.png) | ![](docs/screenshots/critical-dark.png) | ![](docs/screenshots/weekly-bottleneck-light.png) |
 
+Settings is a sidebar window in the same language:
+
+| | |
+|---|---|
+| ![](docs/screenshots/settings-general-dark.png) | ![](docs/screenshots/settings-privacy-light.png) |
+
 These are generated, not hand-captured — `ClaudeUsage --render-preview <dir>` renders every
-scenario in both appearances from fixture data, so they never drift from the real UI:
+scenario and settings pane in both appearances from fixture data, so they never drift from the
+real UI. (AppKit controls photograph as placeholders offscreen; they are real in the window.)
 
 ```bash
 cd macos && "$(swift build --product ClaudeUsageApp --show-bin-path)/ClaudeUsageApp" \
