@@ -471,9 +471,12 @@ private struct HistoryPane: View {
                     tint: model.activity.hookInstalled ? DS.healthy : DS.inkFaint
                 )
                 RowRule()
+                // The value belongs in the title, as it does on every other stepper row —
+                // the subtitle slot is styled as faint explanatory text, so a number put
+                // there reads as a caption rather than the setting's current value.
                 SettingsRow(
-                    title: "Call a silent session unknown after",
-                    subtitle: "\(Int(model.settings.activityStaleSeconds / 60)) minutes",
+                    title: "Treat a silent session as unknown after \(Int(model.settings.activityStaleSeconds / 60))m",
+                    subtitle: "A busy session that stops reporting is shown as unknown, not as still working.",
                     isEnabled: model.settings.activityEnabled
                 ) {
                     Stepper(
