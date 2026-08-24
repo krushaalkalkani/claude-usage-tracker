@@ -11,17 +11,27 @@ Two clients, one data model:
 | **Native macOS menu bar app** | SwiftUI `MenuBarExtra`, Claude plus ChatGPT Codex/agentic usage, notifications, local history, and Claude Code activity. The main event. |
 | **Web dashboard** | React + Vite. Claude gauges, charts, and CSV export. ChatGPT support is native-only in this release. |
 
+**Claude**
+
 | Plenty left | Running out | Weekly is the constraint |
 |---|---|---|
 | ![](docs/screenshots/healthy-dark.png) | ![](docs/screenshots/critical-dark.png) | ![](docs/screenshots/weekly-bottleneck-light.png) |
 
+**ChatGPT** — the header switches providers, and each carries its own limits, credits and trend.
+The percentage beside each name is that provider's tightest limit, so you can read both without
+switching.
+
+| Both providers | Session close to the line | Codex not connected |
+|---|---|---|
+| ![](docs/screenshots/both-providers-dark.png) | ![](docs/screenshots/chatgpt-session-close-dark.png) | ![](docs/screenshots/chatgpt-disconnected-light.png) |
+
 Settings is a sidebar window in the same language:
 
-| | |
+| Providers | Privacy |
 |---|---|
-| ![](docs/screenshots/settings-general-dark.png) | ![](docs/screenshots/settings-privacy-light.png) |
+| ![](docs/screenshots/settings-providers-dark.png) | ![](docs/screenshots/settings-privacy-light.png) |
 
-These are generated, not hand-captured — `ClaudeUsage --render-preview <dir>` renders every
+All 32 are generated, not hand-captured — `ClaudeUsage --render-preview <dir>` renders every
 scenario and settings pane in both appearances from fixture data, so they never drift from the
 real UI. (AppKit controls photograph as placeholders offscreen; they are real in the window.)
 
