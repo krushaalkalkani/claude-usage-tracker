@@ -136,6 +136,7 @@ struct SettingsTests {
         #expect(loaded.refreshInterval == .fiveMinutes)
         #expect(loaded.displayMode == .iconAndPercent)
         #expect(loaded.usageThresholds == [50, 75, 90, 95, 100])
+        #expect(loaded.selectedProvider == .claude)
     }
 
     @Test("reset restores every default")

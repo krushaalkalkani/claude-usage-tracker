@@ -380,15 +380,17 @@ Everything is local, under `~/.claude-usage-tracker/`:
 
 | Path | Contents | Retention |
 |---|---|---|
-| `history.json` | `[{t, limits:{id:percent}, spend}]` samples | 24 h / 7 d / 30 d (default 7 d), pruned on write |
+| `history.json` | `[{provider, t, limits:{id:percent}, spend}]` samples; missing provider decodes as Claude | 24 h / 7 d / 30 d (default 7 d), pruned on write |
 | `sessions/*.json` | Claude Code session metadata | deleted on `SessionEnd`, reaped when the pid dies |
 | `events.jsonl` | last 200 event names + timestamps | ring buffer |
 | `activity.json` | rollup for other consumers | overwritten |
 | `notifications.json` | dedup ledger + cooldown timestamps | pruned to live windows |
 | `last-usage.json` | last successful payload for cold-start display | overwritten |
+| `last-usage-chatgpt.json` | last successful parsed ChatGPT snapshot; no raw response or credentials | overwritten |
 
-Settings live in `UserDefaults` (`com.krushal.claude-usage-tracker`). No network destination
-other than `api.anthropic.com`. No telemetry, no analytics, no crash reporting.
+Settings live in `UserDefaults` (`com.krushal.claude-usage-tracker`). Claude contacts
+`api.anthropic.com`; ChatGPT/Codex normally uses the local Codex app-server, with an isolated
+`chatgpt.com` fallback. No telemetry, analytics, backend, or crash reporting is added.
 
 ## 9. Security
 
@@ -408,6 +410,10 @@ other than `api.anthropic.com`. No telemetry, no analytics, no crash reporting.
   `anthropic-organization-id` / `anthropic-workspace-id` redacted.
 - `URLSession` is configured with `.ephemeral` and no HTTP cache so the response never lands
   on disk.
+- **Codex owns ChatGPT authentication.** The tracker launches only the noninteractive,
+  read-only Codex app-server. It never starts login, opens the TUI, submits a prompt, or asks
+  for an OpenAI API key. The isolated fallback reads a regular local Codex `auth.json` file
+  without modifying it and never persists the credentials.
 
 ## 10. Error states
 
@@ -420,6 +426,9 @@ other than `api.anthropic.com`. No telemetry, no analytics, no crash reporting.
 | Invalid JSON / schema change | Data kept, banner "Usage format not recognised"; raw body retained for debug mode; **never a crash** |
 | No limits parsed | "No usage data reported" — not `0 %` |
 | Partial data | Render the sections that parsed; omit the rest |
+| Codex missing / signed out | ChatGPT-only unavailable state with setup instructions; Claude state remains untouched |
+| Codex app-server timeout | Close stdin, terminate, then kill after a short grace period; keep ChatGPT last-known-good data |
+| ChatGPT fallback 401 / 403 | Ask the user to open Codex or run `codex login`; never start interactive login automatically |
 
 Last-known-good is persisted so a cold launch shows real numbers with an explicit
 "Updated N min ago" instead of zeros.
@@ -450,3 +459,27 @@ Last-known-good is persisted so a cold launch shows real numbers with an explici
 8. React dashboard upgrade to the shared model ✔
 9. ~~SwiftBar refresh~~ — plugin retired once the native app proved out ✔
 10. Self-review, fixes, README ✔
+
+## 13. Native ChatGPT/Codex extension
+
+The native app adds a stable `chatgpt` provider beside `claude` without changing the bundle
+identifier, executable name, storage root, launch-at-login identity, or the React dashboard.
+The selected provider is persisted in the existing settings blob. Usage snapshots, samples,
+last-known-good caches, notification keys, analytics, errors, and retry state are isolated by
+provider.
+
+The preferred ChatGPT source is `codex app-server --stdio` with `read-only` sandboxing and
+interactive approval disabled. The client initializes JSON-RPC, calls `account/read` with
+token refresh disabled, then calls `account/rateLimits/read`. Every read has a strict timeout,
+stdin is closed during cleanup, and the child is terminated or killed before the refresh
+finishes.
+
+If the installed app-server lacks rate-limit support, a replaceable fallback reads the local
+Codex OAuth file as a regular non-symlink file and sends one ephemeral GET request to
+`https://chatgpt.com/backend-api/wham/usage`. The file is never rewritten and raw responses are
+never persisted. Response windows use provider-supplied durations and epoch reset times;
+missing fields remain unknown instead of becoming 0%.
+
+The displayed OpenAI values are explicitly **ChatGPT - Codex/agentic usage**. They do not
+claim to cover every normal ChatGPT conversation because there is no one public universal
+consumer-chat usage meter.

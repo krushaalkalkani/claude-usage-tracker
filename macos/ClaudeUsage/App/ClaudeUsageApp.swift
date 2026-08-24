@@ -20,6 +20,10 @@ struct ClaudeUsageApp: App {
         // `.window` gives a real SwiftUI panel rather than an NSMenu, which is what a custom
         // layout needs.
         .menuBarExtraStyle(.window)
+        // Claude has more sections than ChatGPT, so the ideal height changes when the
+        // provider changes. The default content-minimum policy can retain the taller frame
+        // and bottom-align the shorter view, leaving an empty strip above it.
+        .windowResizability(.contentSize)
 
         Settings {
             SettingsView(model: model)
@@ -73,24 +77,31 @@ struct MenuBarLabel: View {
     }
 
     private var icon: NSImage {
-        MenuBarIcon.image(
-            fraction: model.primaryPercent.map { min($0 / 100, 1) },
-            severity: model.overallSeverity,
+        let metric = model.menuBarMetric
+        return MenuBarIcon.image(
+            fraction: metric.map { min($0.percent / 100, 1) },
+            severity: metric?.severity ?? .normal,
             tint: model.settings.tintIconOnAlert,
-            attention: !model.activity.attentionSessions.isEmpty
+            attention: metric?.provider == .claude && !model.activity.attentionSessions.isEmpty
         )
     }
 
     private var percentText: String {
-        guard let percent = model.primaryPercent else { return "—" }
-        let base = "\(Int(percent.rounded()))%"
-        if let tag = model.primaryTag { return base + tag }
-        return base
+        guard let metric = model.menuBarMetric else { return "—" }
+        let provider = showProviderTag(for: metric) ? "\(metric.provider.compactTag) " : ""
+        let limit = model.settings.showMetricTag ? (metric.limitTag ?? "") : ""
+        return "\(provider)\(Int(metric.percent.rounded()))%\(limit)"
     }
 
     private var accessibilityText: String {
-        guard let percent = model.primaryPercent else { return "Claude usage unavailable" }
-        let name = model.primaryLimit?.shortTitle ?? "usage"
-        return "Claude \(name) \(Int(percent.rounded())) percent"
+        guard let metric = model.menuBarMetric else {
+            return "Claude and ChatGPT usage unavailable"
+        }
+        let name = metric.limit?.title ?? "usage"
+        return "\(metric.provider.displayName) \(name) \(Int(metric.percent.rounded())) percent used"
+    }
+
+    private func showProviderTag(for metric: MenuBarUsageMetric) -> Bool {
+        metric.provider == .chatgpt || model.liveProviderCount > 1
     }
 }

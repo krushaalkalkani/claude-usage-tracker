@@ -35,8 +35,8 @@ public struct PendingNotification: Sendable, Equatable, Identifiable {
     public let title: String
     public let body: String
     public let severity: Severity
-    /// Narrows this notification's cooldown to a sub-key (currently a Claude Code session id)
-    /// so unrelated sessions do not silence each other.
+    /// Narrows this notification's cooldown to a provider or Claude Code session id so
+    /// unrelated sources never silence each other.
     public let cooldownScope: String?
 
     public init(
@@ -72,9 +72,77 @@ public struct NotificationLedger: Sendable, Codable, Equatable {
     /// Attention states already announced, keyed by session + reason.
     public var announcedAttention: Set<String> = []
     /// Consecutive API failures, so we only complain once the problem looks real.
+    /// Kept as the legacy Claude value for backward-compatible decoding and tests.
     public var consecutiveFailures: Int = 0
+    /// Provider-specific replacement for `consecutiveFailures`.
+    public var consecutiveFailuresByProvider: [String: Int] = [:]
 
     public init() {}
+
+    private enum CodingKeys: String, CodingKey {
+        case firedKeys, lastFired, lastResetSeen, lastPercent
+        case announcedCompletions, announcedAttention
+        case consecutiveFailures, consecutiveFailuresByProvider
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        firedKeys = try c.decodeIfPresent(Set<String>.self, forKey: .firedKeys) ?? []
+        lastFired = try c.decodeIfPresent([String: Date].self, forKey: .lastFired) ?? [:]
+        lastResetSeen = try c.decodeIfPresent([String: Date].self, forKey: .lastResetSeen) ?? [:]
+        lastPercent = try c.decodeIfPresent([String: Double].self, forKey: .lastPercent) ?? [:]
+        announcedCompletions = try c.decodeIfPresent(Set<String>.self, forKey: .announcedCompletions) ?? []
+        announcedAttention = try c.decodeIfPresent(Set<String>.self, forKey: .announcedAttention) ?? []
+        consecutiveFailures = try c.decodeIfPresent(Int.self, forKey: .consecutiveFailures) ?? 0
+        consecutiveFailuresByProvider = try c.decodeIfPresent(
+            [String: Int].self, forKey: .consecutiveFailuresByProvider
+        ) ?? [:]
+
+        // v2 keys had no provider. Migrate them in memory as Claude without deleting or
+        // resetting any prior notification bookkeeping.
+        firedKeys = Set(firedKeys.map { $0.contains("#") ? $0 : "claude#\($0)" })
+        lastResetSeen = Self.migrateProviderKeys(lastResetSeen)
+        lastPercent = Self.migrateProviderKeys(lastPercent)
+
+        let providerCooldownCategories: Set<String> = [
+            NotificationCategory.usageThreshold.rawValue,
+            NotificationCategory.quotaReset.rawValue,
+            NotificationCategory.projectedOverrun.rawValue,
+            NotificationCategory.usageSurge.rawValue,
+            NotificationCategory.apiAuth.rawValue,
+            NotificationCategory.apiUnavailable.rawValue,
+            NotificationCategory.apiRateLimited.rawValue,
+        ]
+        var migratedLastFired = lastFired.filter { !providerCooldownCategories.contains($0.key) }
+        for (key, value) in lastFired where providerCooldownCategories.contains(key) {
+            if migratedLastFired["\(key)#claude"] == nil {
+                migratedLastFired["\(key)#claude"] = value
+            }
+        }
+        lastFired = migratedLastFired
+        if consecutiveFailuresByProvider[UsageProvider.claude.rawValue] == nil {
+            consecutiveFailuresByProvider[UsageProvider.claude.rawValue] = consecutiveFailures
+        }
+    }
+
+    private static func migrateProviderKeys<Value>(_ source: [String: Value]) -> [String: Value] {
+        var migrated = source.filter { $0.key.contains("#") }
+        for (key, value) in source where !key.contains("#") {
+            let qualified = "claude#\(key)"
+            if migrated[qualified] == nil { migrated[qualified] = value }
+        }
+        return migrated
+    }
+
+    mutating func setFailureCount(_ value: Int, for provider: UsageProvider) {
+        consecutiveFailuresByProvider[provider.rawValue] = value
+        if provider == .claude { consecutiveFailures = value }
+    }
+
+    func failureCount(for provider: UsageProvider) -> Int {
+        consecutiveFailuresByProvider[provider.rawValue]
+            ?? (provider == .claude ? consecutiveFailures : 0)
+    }
 
     mutating func prune(now: Date, keep: TimeInterval = 14 * 86_400) {
         let cutoff = now.addingTimeInterval(-keep)
@@ -95,6 +163,7 @@ public struct NotificationLedger: Sendable, Codable, Equatable {
 /// Everything the policy needs to decide. Passing this in rather than reaching for globals is
 /// what makes the whole decision surface unit-testable.
 public struct PolicyContext: Sendable {
+    public let provider: UsageProvider
     public let now: Date
     public let settings: AppSettings
     public let snapshot: UsageSnapshot?
@@ -109,12 +178,14 @@ public struct PolicyContext: Sendable {
         now: Date,
         settings: AppSettings,
         snapshot: UsageSnapshot?,
+        provider: UsageProvider = .claude,
         projections: [String: UsageProjection] = [:],
         surgingLimitIDs: Set<String> = [],
         activity: ActivityState? = nil,
         apiError: UsageAPIError? = nil,
         apiHealthy: Bool = true
     ) {
+        self.provider = provider
         self.now = now
         self.settings = settings
         self.snapshot = snapshot
@@ -145,7 +216,9 @@ public enum NotificationPolicy {
         var out: [PendingNotification] = []
         out += usageNotifications(context, ledger: &ledger)
         out += apiNotifications(context, ledger: &ledger)
-        out += activityNotifications(context, ledger: &ledger)
+        if context.provider == .claude {
+            out += activityNotifications(context, ledger: &ledger)
+        }
 
         // Quiet hours filter last so all the bookkeeping above still happens.
         let allowed = out.filter { candidate in
@@ -171,14 +244,15 @@ public enum NotificationPolicy {
         let thresholds = context.settings.normalizedThresholds
 
         for limit in snapshot.limits {
+            let ledgerLimitID = "\(context.provider.rawValue)#\(limit.id)"
             // Bucketed to the minute. The reset instant must never be used at full precision
             // in a dedup key: the API jitters its fractional seconds on every response, so a
             // key built from the raw value is unique every poll and dedups nothing.
             let windowKey = limit.resetsAt
                 .map { ISO8601.string(from: Date(timeIntervalSince1970: ($0.timeIntervalSince1970 / 60).rounded(.down) * 60)) }
                 ?? "nowindow"
-            let previousReset = ledger.lastResetSeen[limit.id]
-            let previousPercent = ledger.lastPercent[limit.id]
+            let previousReset = ledger.lastResetSeen[ledgerLimitID]
+            let previousPercent = ledger.lastPercent[ledgerLimitID]
 
             // A quota window has rolled over only when utilisation actually **falls**.
             //
@@ -197,16 +271,17 @@ public enum NotificationPolicy {
 
             if resetDetected {
                 // Re-arm every threshold for the new window.
-                ledger.firedKeys = ledger.firedKeys.filter { !$0.hasPrefix("\(limit.id)|") }
+                ledger.firedKeys = ledger.firedKeys.filter { !$0.hasPrefix("\(ledgerLimitID)|") }
 
                 if context.settings.notifyOnReset, let previousPercent, previousPercent >= 25 {
                     out.append(
                         PendingNotification(
-                            id: "reset|\(limit.id)|\(windowKey)",
+                            id: "reset|\(ledgerLimitID)|\(windowKey)",
                             category: .quotaReset,
-                            title: "\(limit.shortTitle) quota reset",
+                            title: "\(context.provider.displayName) · \(limit.shortTitle) quota reset",
                             body: "Was \(Format.percent(previousPercent)) — now \(Format.percent(limit.percent)).",
-                            severity: .normal
+                            severity: .normal,
+                            cooldownScope: context.provider.rawValue
                         )
                     )
                 }
@@ -214,13 +289,13 @@ public enum NotificationPolicy {
 
             // Threshold crossings. The key embeds the window so each window announces once.
             for threshold in thresholds where limit.percent >= Double(threshold) {
-                let key = "\(limit.id)|\(windowKey)|\(threshold)"
+                let key = "\(ledgerLimitID)|\(windowKey)|\(threshold)"
                 guard !ledger.firedKeys.contains(key) else { continue }
                 // Only announce the highest threshold crossed in one evaluation — jumping
                 // 40 % → 96 % should produce one notification, not four.
                 let higherPending = thresholds.contains {
                     $0 > threshold && limit.percent >= Double($0)
-                        && !ledger.firedKeys.contains("\(limit.id)|\(windowKey)|\($0)")
+                        && !ledger.firedKeys.contains("\(ledgerLimitID)|\(windowKey)|\($0)")
                 }
                 ledger.firedKeys.insert(key)
                 guard !higherPending else { continue }
@@ -234,9 +309,10 @@ public enum NotificationPolicy {
                     PendingNotification(
                         id: key,
                         category: .usageThreshold,
-                        title: "\(limit.shortTitle) at \(threshold)%",
+                        title: "\(context.provider.displayName) · \(limit.shortTitle) at \(threshold)%",
                         body: body,
-                        severity: severity
+                        severity: severity,
+                        cooldownScope: context.provider.rawValue
                     )
                 )
             }
@@ -249,14 +325,18 @@ public enum NotificationPolicy {
                let rate = projection.burnRate,
                // Only when the estimate is grounded: enough samples and a coherent trend.
                rate.sampleCount >= 4, rate.fitQuality >= 0.5, limit.percent < 100,
-               allowed(.projectedOverrun, ledger: ledger, now: context.now) {
+               allowed(
+                   .projectedOverrun, ledger: ledger, now: context.now,
+                   scope: context.provider.rawValue
+               ) {
                 out.append(
                     PendingNotification(
-                        id: "projected|\(limit.id)|\(windowKey)",
+                        id: "projected|\(ledgerLimitID)|\(windowKey)",
                         category: .projectedOverrun,
-                        title: "\(limit.shortTitle) projected to run out",
+                        title: "\(context.provider.displayName) · \(limit.shortTitle) projected to run out",
                         body: "At \(Format.rate(rate.perHour)) you hit 100% in \(Format.duration(eta)), before the reset.",
-                        severity: .warning
+                        severity: .warning,
+                        cooldownScope: context.provider.rawValue
                     )
                 )
             }
@@ -265,20 +345,24 @@ public enum NotificationPolicy {
             if context.settings.notifyOnSurge,
                context.surgingLimitIDs.contains(limit.id),
                limit.percent >= 40,
-               allowed(.usageSurge, ledger: ledger, now: context.now) {
+               allowed(
+                   .usageSurge, ledger: ledger, now: context.now,
+                   scope: context.provider.rawValue
+               ) {
                 out.append(
                     PendingNotification(
-                        id: "surge|\(limit.id)|\(windowKey)",
+                        id: "surge|\(ledgerLimitID)|\(windowKey)",
                         category: .usageSurge,
-                        title: "\(limit.shortTitle) climbing fast",
+                        title: "\(context.provider.displayName) · \(limit.shortTitle) climbing fast",
                         body: "Now \(Format.percent(limit.percent)) and accelerating.",
-                        severity: .warning
+                        severity: .warning,
+                        cooldownScope: context.provider.rawValue
                     )
                 )
             }
 
-            ledger.lastResetSeen[limit.id] = limit.resetsAt
-            ledger.lastPercent[limit.id] = limit.percent
+            ledger.lastResetSeen[ledgerLimitID] = limit.resetsAt
+            ledger.lastPercent[ledgerLimitID] = limit.percent
         }
         return out
     }
@@ -288,8 +372,9 @@ public enum NotificationPolicy {
     private static func trackWindows(_ context: PolicyContext, ledger: inout NotificationLedger) {
         guard let snapshot = context.snapshot else { return }
         for limit in snapshot.limits {
-            ledger.lastResetSeen[limit.id] = limit.resetsAt
-            ledger.lastPercent[limit.id] = limit.percent
+            let key = "\(context.provider.rawValue)#\(limit.id)"
+            ledger.lastResetSeen[key] = limit.resetsAt
+            ledger.lastPercent[key] = limit.percent
         }
     }
 
@@ -300,54 +385,65 @@ public enum NotificationPolicy {
         ledger: inout NotificationLedger
     ) -> [PendingNotification] {
         guard context.settings.notifyOnAPIError else {
-            if context.apiHealthy { ledger.consecutiveFailures = 0 }
+            if context.apiHealthy { ledger.setFailureCount(0, for: context.provider) }
             return []
         }
 
         guard let error = context.apiError, !context.apiHealthy else {
-            ledger.consecutiveFailures = 0
+            ledger.setFailureCount(0, for: context.provider)
             return []
         }
 
-        ledger.consecutiveFailures += 1
+        let failures = ledger.failureCount(for: context.provider) + 1
+        ledger.setFailureCount(failures, for: context.provider)
+        let providerScope = context.provider.rawValue
 
         switch error {
-        case .unauthorized, .forbidden, .missingToken:
-            guard allowed(.apiAuth, ledger: ledger, now: context.now) else { return [] }
+        case .unauthorized, .forbidden, .missingToken, .codexAuthenticationRequired, .cliNotFound:
+            guard allowed(
+                .apiAuth, ledger: ledger, now: context.now, scope: providerScope
+            ) else { return [] }
             return [
                 PendingNotification(
-                    id: "api-auth",
+                    id: "api-auth|\(providerScope)",
                     category: .apiAuth,
-                    title: error.title,
-                    body: error.detail,
-                    severity: .warning
+                    title: "\(context.provider.displayName) · \(error.title(for: context.provider))",
+                    body: error.detail(for: context.provider),
+                    severity: .warning,
+                    cooldownScope: providerScope
                 )
             ]
 
         case .rateLimited:
-            guard allowed(.apiRateLimited, ledger: ledger, now: context.now) else { return [] }
+            guard allowed(
+                .apiRateLimited, ledger: ledger, now: context.now, scope: providerScope
+            ) else { return [] }
             return [
                 PendingNotification(
-                    id: "api-rate-limited",
+                    id: "api-rate-limited|\(providerScope)",
                     category: .apiRateLimited,
-                    title: "Usage API rate limited",
-                    body: error.detail,
-                    severity: .normal
+                    title: "\(context.provider.displayName) · Usage service rate limited",
+                    body: error.detail(for: context.provider),
+                    severity: .normal,
+                    cooldownScope: providerScope
                 )
             ]
 
         default:
             // A single blip is not news. Speak up only once it looks persistent.
-            guard ledger.consecutiveFailures >= 3,
-                  allowed(.apiUnavailable, ledger: ledger, now: context.now)
+            guard failures >= 3,
+                  allowed(
+                      .apiUnavailable, ledger: ledger, now: context.now, scope: providerScope
+                  )
             else { return [] }
             return [
                 PendingNotification(
-                    id: "api-unavailable",
+                    id: "api-unavailable|\(providerScope)",
                     category: .apiUnavailable,
-                    title: "Usage data unavailable",
-                    body: "\(error.title). Showing the last known values.",
-                    severity: .normal
+                    title: "\(context.provider.displayName) · Usage data unavailable",
+                    body: "\(error.title(for: context.provider)). Showing the last known values.",
+                    severity: .normal,
+                    cooldownScope: providerScope
                 )
             ]
         }

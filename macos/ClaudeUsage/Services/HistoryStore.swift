@@ -28,6 +28,10 @@ public final class HistoryStore: @unchecked Sendable {
         return samples
     }
 
+    public func load(provider: UsageProvider) -> [UsageSample] {
+        load().filter { $0.provider == provider }
+    }
+
     private func loadIfNeeded() {
         guard !loaded else { return }
         loaded = true
@@ -45,8 +49,10 @@ public final class HistoryStore: @unchecked Sendable {
         loadIfNeeded()
 
         // Guard against duplicate timestamps from a double-fire refresh.
-        if let last = samples.last, abs(last.t.timeIntervalSince(sample.t)) < 1 {
-            samples[samples.count - 1] = sample
+        if let duplicate = samples.lastIndex(where: {
+            $0.provider == sample.provider && abs($0.t.timeIntervalSince(sample.t)) < 1
+        }) {
+            samples[duplicate] = sample
         } else {
             samples.append(sample)
             if let last = samples.last, samples.count > 1, last.t < samples[samples.count - 2].t {
@@ -57,7 +63,7 @@ public final class HistoryStore: @unchecked Sendable {
         prune(retention: retention, now: now)
         dirty = true
         persistIfDue(now: now)
-        return samples
+        return samples.filter { $0.provider == sample.provider }
     }
 
     /// Forces a write. Called on quit and when settings change.
@@ -99,8 +105,11 @@ public final class HistoryStore: @unchecked Sendable {
         if let firstKept = samples.firstIndex(where: { $0.t >= cutoff }) {
             if firstKept > 0 { samples.removeFirst(firstKept) }
         } else if !samples.isEmpty, samples.last!.t < cutoff {
-            // Everything is older than the cutoff; keep the newest so the UI is not blank.
-            samples = [samples[samples.count - 1]]
+            // Everything is older than the cutoff; keep the newest for each provider so
+            // pruning one provider can never make the other provider's trend disappear.
+            samples = UsageProvider.allCases.compactMap { provider in
+                samples.last { $0.provider == provider }
+            }.sorted { $0.t < $1.t }
         }
         // Hard ceiling as a belt-and-braces guard against unbounded growth if a clock jumps.
         let maxSamples = 20_000
@@ -125,19 +134,32 @@ public final class HistoryStore: @unchecked Sendable {
 /// Persists the last successful snapshot so a cold launch shows real numbers, clearly
 /// labelled with their age, instead of zeros.
 public enum LastUsageCache {
-    public static func save(_ snapshot: UsageSnapshot) {
+    public static func save(
+        _ snapshot: UsageSnapshot,
+        provider: UsageProvider? = nil,
+        url: URL? = nil
+    ) {
         // `raw` is excluded by UsageSnapshot's CodingKeys, so the payload's workspace and
         // organization identifiers never reach disk.
         guard let data = try? JSONEncoder.store.encode(snapshot) else { return }
-        try? AtomicFile.write(data, to: AppPaths.lastUsageFile)
+        let owner = provider ?? snapshot.provider
+        try? AtomicFile.write(data, to: url ?? AppPaths.lastUsageFile(for: owner))
     }
 
-    public static func load() -> UsageSnapshot? {
-        guard let data = AtomicFile.read(AppPaths.lastUsageFile) else { return nil }
-        return try? JSONDecoder.store.decode(UsageSnapshot.self, from: data)
+    public static func load(
+        provider: UsageProvider = .claude,
+        url: URL? = nil
+    ) -> UsageSnapshot? {
+        guard let data = AtomicFile.read(url ?? AppPaths.lastUsageFile(for: provider)),
+              let decoded = try? JSONDecoder.store.decode(UsageSnapshot.self, from: data)
+        else { return nil }
+        // A legacy file has no provider and therefore decodes as Claude. Never allow a cache
+        // passed under the wrong provider to cross-contaminate state.
+        guard decoded.provider == provider else { return nil }
+        return decoded
     }
 
-    public static func clear() {
-        try? FileManager.default.removeItem(at: AppPaths.lastUsageFile)
+    public static func clear(provider: UsageProvider = .claude, url: URL? = nil) {
+        try? FileManager.default.removeItem(at: url ?? AppPaths.lastUsageFile(for: provider))
     }
 }

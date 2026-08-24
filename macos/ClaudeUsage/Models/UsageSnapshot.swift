@@ -1,12 +1,49 @@
 import Foundation
 
+/// Credit metadata exactly as a provider returned it. A balance is kept as a decimal string
+/// because its unit is provider-defined; the app never guesses a currency.
+public struct UsageCredits: Sendable, Codable, Equatable {
+    public let hasCredits: Bool?
+    public let unlimited: Bool?
+    public let balance: String?
+
+    public init(hasCredits: Bool?, unlimited: Bool?, balance: String?) {
+        self.hasCredits = hasCredits
+        self.unlimited = unlimited
+        self.balance = balance
+    }
+
+    public var isPresentable: Bool {
+        unlimited == true || hasCredits != nil || balance != nil
+    }
+}
+
+/// Optional spend-control metadata. Values remain provider-formatted decimal strings so a
+/// subscription credit balance is never mislabeled as dollars.
+public struct UsageSpendControl: Sendable, Codable, Equatable {
+    public let used: String
+    public let limit: String
+    public let remainingPercent: Double?
+    public let resetsAt: Date?
+
+    public init(used: String, limit: String, remainingPercent: Double?, resetsAt: Date?) {
+        self.used = used
+        self.limit = limit
+        self.remainingPercent = remainingPercent
+        self.resetsAt = resetsAt
+    }
+}
+
 /// A parsed, normalized view of one `/api/oauth/usage` response.
 public struct UsageSnapshot: Sendable, Codable, Equatable {
+    public let provider: UsageProvider
     /// When this snapshot was received.
     public let fetchedAt: Date
     /// Every quota window we could make sense of, in display order.
     public let limits: [LimitWindow]
     public let spend: SpendInfo?
+    public let credits: UsageCredits?
+    public let spendControl: UsageSpendControl?
     /// Notes about fields we expected but did not find. Surfaced only in debug mode; never
     /// blocks rendering.
     public let schemaWarnings: [String]
@@ -18,11 +55,17 @@ public struct UsageSnapshot: Sendable, Codable, Equatable {
         limits: [LimitWindow],
         spend: SpendInfo?,
         schemaWarnings: [String] = [],
-        raw: JSONValue? = nil
+        raw: JSONValue? = nil,
+        provider: UsageProvider = .claude,
+        credits: UsageCredits? = nil,
+        spendControl: UsageSpendControl? = nil
     ) {
+        self.provider = provider
         self.fetchedAt = fetchedAt
         self.limits = limits
         self.spend = spend
+        self.credits = credits
+        self.spendControl = spendControl
         self.schemaWarnings = schemaWarnings
         self.raw = raw
     }
@@ -45,7 +88,9 @@ public struct UsageSnapshot: Sendable, Codable, Equatable {
         limits.filter { $0.surface != nil && !$0.isModelScoped }
     }
 
-    public var hasAnyData: Bool { !limits.isEmpty || spend != nil }
+    public var hasAnyData: Bool {
+        !limits.isEmpty || spend != nil || credits != nil || spendControl != nil
+    }
 
     /// Severity of the quota windows alone.
     ///
@@ -77,14 +122,17 @@ public struct UsageSnapshot: Sendable, Codable, Equatable {
     // `raw` is excluded from Codable so that persisting a snapshot never writes the full
     // payload (which carries workspace/organization identifiers) to disk.
     private enum CodingKeys: String, CodingKey {
-        case fetchedAt, limits, spend, schemaWarnings
+        case provider, fetchedAt, limits, spend, credits, spendControl, schemaWarnings
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        provider = try c.decodeIfPresent(UsageProvider.self, forKey: .provider) ?? .claude
         fetchedAt = try c.decode(Date.self, forKey: .fetchedAt)
         limits = try c.decodeIfPresent([LimitWindow].self, forKey: .limits) ?? []
         spend = try c.decodeIfPresent(SpendInfo.self, forKey: .spend)
+        credits = try c.decodeIfPresent(UsageCredits.self, forKey: .credits)
+        spendControl = try c.decodeIfPresent(UsageSpendControl.self, forKey: .spendControl)
         schemaWarnings = try c.decodeIfPresent([String].self, forKey: .schemaWarnings) ?? []
         raw = nil
     }

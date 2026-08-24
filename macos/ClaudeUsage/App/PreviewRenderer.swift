@@ -65,7 +65,9 @@ enum PreviewRenderer {
 
     @MainActor
     private static func renderSettings(_ pane: SettingsView.Pane, dark: Bool, into dir: URL) {
-        let model = Scenario.all[1].makeModel()
+        let model = pane == .providers
+            ? Scenario.all.first { $0.name == "both-providers" }!.makeModel()
+            : Scenario.all[1].makeModel()
         let view = SettingsView(model: model, startPane: pane, rendersFlat: true)
             .environment(\.colorScheme, dark ? .dark : .light)
         let appearance = NSAppearance(named: dark ? .darkAqua : .aqua)!
@@ -100,7 +102,108 @@ enum PreviewRenderer {
                 m.previewApply(error: .unauthorized)
                 return m
             },
+            Scenario(name: "chatgpt-healthy") {
+                chatGPTModel(session: 24, weekly: 18, additional: 12)
+            },
+            Scenario(name: "chatgpt-session-close") {
+                chatGPTModel(session: 94, weekly: 42, additional: 20)
+            },
+            Scenario(name: "chatgpt-weekly-bottleneck") {
+                chatGPTModel(session: 37, weekly: 92, additional: 54)
+            },
+            Scenario(name: "chatgpt-disconnected") {
+                let m = model(percent: 53, weekly: 32, model: 18, burning: 2)
+                m.previewApply(
+                    provider: .chatgpt, error: .codexAuthenticationRequired,
+                    cliDetected: true
+                )
+                return m
+            },
+            Scenario(name: "provider-failure-chatgpt") {
+                let m = model(percent: 53, weekly: 32, model: 18, burning: 2)
+                let fixture = chatGPTFixture(session: 24, weekly: 64, additional: 31)
+                m.previewApply(
+                    snapshot: fixture.snapshot, samples: fixture.samples,
+                    plan: "Pro", error: .offline, select: true
+                )
+                return m
+            },
+            Scenario(name: "both-providers") {
+                let m = model(percent: 53, weekly: 32, model: 18, burning: 2)
+                let fixture = chatGPTFixture(session: 24, weekly: 64, additional: 31)
+                m.previewApply(
+                    snapshot: fixture.snapshot, samples: fixture.samples,
+                    plan: "Pro", select: true
+                )
+                return m
+            },
         ]
+    }
+
+    @MainActor
+    private static func chatGPTModel(
+        session: Double, weekly: Double, additional: Double
+    ) -> AppModel {
+        let fixture = chatGPTFixture(
+            session: session, weekly: weekly, additional: additional
+        )
+        return AppModel.preview(
+            snapshot: fixture.snapshot,
+            activity: .unavailable,
+            samples: fixture.samples,
+            plan: "Pro",
+            now: fixture.snapshot.fetchedAt
+        )
+    }
+
+    private static func chatGPTFixture(
+        session: Double, weekly: Double, additional: Double
+    ) -> (snapshot: UsageSnapshot, samples: [UsageSample]) {
+        let now = Date()
+        let sessionReset = now.addingTimeInterval(97 * 60)
+        let weeklyReset = now.addingTimeInterval(4 * 86_400 + 8 * 3_600)
+        let severity: (Double) -> Severity = { Severity.from(percent: $0) }
+        let limits = [
+            LimitWindow(
+                id: "session", kind: "primary", group: .session,
+                title: "5-hour limit", shortTitle: "Session",
+                percent: session, resetsAt: sessionReset, severity: severity(session),
+                isActive: true, provider: .chatgpt, windowDuration: 5 * 3_600
+            ),
+            LimitWindow(
+                id: "weekly_all", kind: "secondary", group: .weekly,
+                title: "7-day limit", shortTitle: "Weekly",
+                percent: weekly, resetsAt: weeklyReset, severity: severity(weekly),
+                provider: .chatgpt, windowDuration: 7 * 86_400
+            ),
+            LimitWindow(
+                id: "model|gpt-5.2-codex", kind: "model", group: .weekly,
+                title: "GPT-5.2-Codex · 7-day", shortTitle: "GPT-5.2-Codex",
+                percent: additional, resetsAt: weeklyReset, severity: severity(additional),
+                modelName: "GPT-5.2-Codex", provider: .chatgpt,
+                windowDuration: 7 * 86_400
+            ),
+        ]
+        let snapshot = UsageSnapshot(
+            fetchedAt: now,
+            limits: limits,
+            spend: nil,
+            provider: .chatgpt,
+            credits: UsageCredits(hasCredits: true, unlimited: false, balance: "18.50")
+        )
+        let samples = (0...24).map { index in
+            let hoursAgo = Double(24 - index) / 12
+            return UsageSample(
+                t: now.addingTimeInterval(-hoursAgo * 3_600),
+                limits: [
+                    "session": max(0, session - hoursAgo * 4),
+                    "weekly_all": max(0, weekly - hoursAgo * 0.5),
+                    "model|gpt-5.2-codex": max(0, additional - hoursAgo * 0.7),
+                ],
+                provider: .chatgpt
+            )
+        }
+        return (snapshot, samples)
     }
 
     @MainActor

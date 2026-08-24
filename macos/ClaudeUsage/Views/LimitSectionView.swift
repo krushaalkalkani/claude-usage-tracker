@@ -81,14 +81,35 @@ struct HeroLimitView: View {
     }
 
     private var periodLabel: String {
-        let period = limit.group == .session ? "5-hour" : "7-day"
+        let period = durationLabel
         if let model = limit.modelName { return "\(model) · \(period)" }
         if let surface = limit.surface { return "\(surface) · \(period)" }
         switch limit.group {
-        case .session: return "Session · 5-hour"
-        case .weekly: return "Weekly · 7-day"
-        case .other: return limit.kind.replacingOccurrences(of: "_", with: " ")
+        case .session: return "Session · \(period)"
+        case .weekly: return "Weekly · \(period)"
+        case .other:
+            return limit.shortTitle == limit.kind ? period : "\(limit.shortTitle) · \(period)"
         }
+    }
+
+    private var durationLabel: String {
+        guard let seconds = limit.windowDuration, seconds > 0 else {
+            switch limit.group {
+            case .session: return "5-hour"
+            case .weekly: return "7-day"
+            case .other: return limit.kind.replacingOccurrences(of: "_", with: " ")
+            }
+        }
+        if seconds >= 86_400, seconds.truncatingRemainder(dividingBy: 86_400) == 0 {
+            return "\(Int(seconds / 86_400))-day"
+        }
+        if seconds >= 3_600, seconds.truncatingRemainder(dividingBy: 3_600) == 0 {
+            return "\(Int(seconds / 3_600))-hour"
+        }
+        if seconds >= 60, seconds.truncatingRemainder(dividingBy: 60) == 0 {
+            return "\(Int(seconds / 60))-minute"
+        }
+        return Format.duration(seconds)
     }
 }
 
