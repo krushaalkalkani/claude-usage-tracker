@@ -45,31 +45,36 @@ fi
 
 echo "==> assembling $APP"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+STAGING_ROOT="$(mktemp -d /private/tmp/claudeusage-build.XXXXXX)"
+trap 'rm -rf "$STAGING_ROOT"' EXIT
+STAGED_APP="$STAGING_ROOT/$APP_NAME.app"
+mkdir -p "$STAGED_APP/Contents/MacOS" "$STAGED_APP/Contents/Resources"
 
 # `ditto --noextattr --norsrc --noacl` rather than `cp`: a plain copy carries extended
 # attributes that make codesign fail with "resource fork, Finder information, or similar
 # detritus not allowed", and `xattr -c` cannot strip com.apple.provenance.
-ditto --noextattr --norsrc --noacl "$BIN" "$APP/Contents/MacOS/$APP_NAME"
+ditto --noextattr --norsrc --noacl "$BIN" "$STAGED_APP/Contents/MacOS/$APP_NAME"
 ditto --noextattr --norsrc --noacl \
-  "$PKG_DIR/ClaudeUsage/Resources/Info.plist" "$APP/Contents/Info.plist"
-printf 'APPL????' > "$APP/Contents/PkgInfo"
+  "$PKG_DIR/ClaudeUsage/Resources/Info.plist" "$STAGED_APP/Contents/Info.plist"
+printf 'APPL????' > "$STAGED_APP/Contents/PkgInfo"
 
 # Ad-hoc signature. UNUserNotificationCenter and SMAppService both want a signed bundle
 # with a stable identifier; without this the app still runs but falls back to the osascript
-# notification path and cannot register as a login item.
+# notification path and cannot register as a login item. Sign in /private/tmp: Desktop can be
+# managed by File Provider, which attaches provenance metadata quickly enough to make codesign
+# reject an otherwise clean bundle. The verified signature is then copied into build/.
 echo "==> codesign (ad-hoc)"
 if codesign --force --sign - \
      --identifier "com.krushal.claude-usage-tracker" \
-     "$APP" 2>&1 | grep -qi "error\|not allowed"; then
+     "$STAGED_APP" >/dev/null 2>&1 \
+   && codesign --verify --deep --strict "$STAGED_APP" >/dev/null 2>&1; then
+  echo "    signed and verified: $(codesign -dv "$STAGED_APP" 2>&1 | awk -F= '/^Identifier/{print $2}')"
+else
   echo "    (signing failed — the app still runs, but notifications will use the"
   echo "     osascript fallback and 'Launch at login' will be unavailable)"
-else
-  codesign --verify "$APP" 2>/dev/null \
-    && echo "    signed: $(codesign -dv "$APP" 2>&1 | awk -F= '/^Identifier/{print $2}')" \
-    || echo "    (signature did not verify)"
 fi
 
+ditto --noextattr --norsrc --noacl "$STAGED_APP" "$APP"
 echo "==> built $APP"
 
 if [ "$INSTALL" -eq 1 ]; then

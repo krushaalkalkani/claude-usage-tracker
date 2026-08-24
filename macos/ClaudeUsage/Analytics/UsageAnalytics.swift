@@ -3,13 +3,21 @@ import Foundation
 /// One recorded observation. Deliberately tiny: a week of 2-minute samples is ~5000 entries,
 /// so the on-disk representation stays well under a megabyte.
 public struct UsageSample: Sendable, Codable, Equatable {
+    /// Older samples have no provider field and decode as Claude.
+    public let provider: UsageProvider
     public let t: Date
     /// limit id → percent
     public let limits: [String: Double]
     /// Spend percent, when the account exposes spend.
     public let spend: Double?
 
-    public init(t: Date, limits: [String: Double], spend: Double? = nil) {
+    public init(
+        t: Date,
+        limits: [String: Double],
+        spend: Double? = nil,
+        provider: UsageProvider = .claude
+    ) {
+        self.provider = provider
         self.t = t
         self.limits = limits
         self.spend = spend
@@ -22,8 +30,19 @@ public struct UsageSample: Sendable, Codable, Equatable {
                 snapshot.limits.map { ($0.id, $0.percent) },
                 uniquingKeysWith: { a, _ in a }
             ),
-            spend: snapshot.spend?.percent
+            spend: snapshot.spend?.percent,
+            provider: snapshot.provider
         )
+    }
+
+    private enum CodingKeys: String, CodingKey { case provider, t, limits, spend }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        provider = try c.decodeIfPresent(UsageProvider.self, forKey: .provider) ?? .claude
+        t = try c.decode(Date.self, forKey: .t)
+        limits = try c.decodeIfPresent([String: Double].self, forKey: .limits) ?? [:]
+        spend = try c.decodeIfPresent(Double.self, forKey: .spend)
     }
 }
 
@@ -83,9 +102,14 @@ public enum UsageAnalytics {
         }
     }
 
+    public static func windowLength(for limit: LimitWindow) -> TimeInterval? {
+        if let duration = limit.windowDuration, duration > 0 { return duration }
+        return windowLength(for: limit.group)
+    }
+
     /// How much history a given limit needs before its trend is worth stating.
     public static func requiredSpan(for limit: LimitWindow) -> TimeInterval {
-        guard let length = windowLength(for: limit.group) else { return minimumSpan }
+        guard let length = windowLength(for: limit) else { return minimumSpan }
         return max(minimumSpan, length * minimumSpanFraction)
     }
 
@@ -96,10 +120,12 @@ public enum UsageAnalytics {
     public static func currentWindowSamples(
         _ samples: [UsageSample],
         limitID: String,
+        provider: UsageProvider = .claude,
         windowStart: Date? = nil,
         dropTolerance: Double = 5
     ) -> [(Date, Double)] {
         var series: [(Date, Double)] = samples
+            .filter { $0.provider == provider }
             .compactMap { s in s.limits[limitID].map { (s.t, $0) } }
             .sorted { $0.0 < $1.0 }
 
@@ -124,10 +150,13 @@ public enum UsageAnalytics {
     public static func burnRate(
         _ samples: [UsageSample],
         limitID: String,
+        provider: UsageProvider = .claude,
         windowStart: Date? = nil,
         requiredSpan: TimeInterval = minimumSpan
     ) -> BurnRate? {
-        let series = currentWindowSamples(samples, limitID: limitID, windowStart: windowStart)
+        let series = currentWindowSamples(
+            samples, limitID: limitID, provider: provider, windowStart: windowStart
+        )
         return burnRate(series: series, requiredSpan: requiredSpan)
     }
 
@@ -180,6 +209,7 @@ public enum UsageAnalytics {
         let rate = burnRate(
             samples,
             limitID: limit.id,
+            provider: limit.provider,
             windowStart: windowStart(for: limit),
             requiredSpan: requiredSpan(for: limit)
         )
@@ -215,12 +245,10 @@ public enum UsageAnalytics {
     /// The instant the current quota window opened, derived from its reset time and the
     /// window length implied by `group`. Returns nil for windows of unknown length.
     static func windowStart(for limit: LimitWindow) -> Date? {
-        guard let resetsAt = limit.resetsAt else { return nil }
-        switch limit.group {
-        case .session: return resetsAt.addingTimeInterval(-5 * 3600)
-        case .weekly: return resetsAt.addingTimeInterval(-7 * 86_400)
-        case .other: return nil
+        guard let resetsAt = limit.resetsAt, let length = windowLength(for: limit) else {
+            return nil
         }
+        return resetsAt.addingTimeInterval(-length)
     }
 
     /// Average consumption per day over the window so far — the figure the weekly section
@@ -234,7 +262,9 @@ public enum UsageAnalytics {
         let elapsed = now.timeIntervalSince(start)
         guard elapsed > 3600 else { return nil }
         // Prefer measured usage over the assumption that the window started at 0 %.
-        let series = currentWindowSamples(samples, limitID: limit.id, windowStart: start)
+        let series = currentWindowSamples(
+            samples, limitID: limit.id, provider: limit.provider, windowStart: start
+        )
         if let first = series.first, series.count >= minimumSamples {
             let span = now.timeIntervalSince(first.0)
             // Same proportional guard as the burn rate: a 7-day average extrapolated from
@@ -253,7 +283,10 @@ public enum UsageAnalytics {
         multiplier: Double = 3,
         minimumRecentRate: Double = 5
     ) -> Bool {
-        let series = currentWindowSamples(samples, limitID: limit.id, windowStart: windowStart(for: limit))
+        let series = currentWindowSamples(
+            samples, limitID: limit.id, provider: limit.provider,
+            windowStart: windowStart(for: limit)
+        )
         guard series.count >= minimumSamples + 1 else { return false }
         // A "surge" only means something relative to an established baseline.
         guard let start = series.first, let end = series.last,
@@ -271,8 +304,11 @@ public enum UsageAnalytics {
     }
 
     /// Highest value seen for a limit within the retained history.
-    public static func peak(_ samples: [UsageSample], limitID: String) -> (Date, Double)? {
+    public static func peak(
+        _ samples: [UsageSample], limitID: String, provider: UsageProvider = .claude
+    ) -> (Date, Double)? {
         samples
+            .filter { $0.provider == provider }
             .compactMap { s in s.limits[limitID].map { (s.t, $0) } }
             .max { $0.1 < $1.1 }
     }
@@ -281,10 +317,12 @@ public enum UsageAnalytics {
     public static func timeSinceChange(
         _ samples: [UsageSample],
         limitID: String,
+        provider: UsageProvider = .claude,
         now: Date,
         epsilon: Double = 0.01
     ) -> TimeInterval? {
         let series = samples
+            .filter { $0.provider == provider }
             .compactMap { s in s.limits[limitID].map { (s.t, $0) } }
             .sorted { $0.0 < $1.0 }
         guard let last = series.last else { return nil }

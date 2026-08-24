@@ -18,6 +18,7 @@ struct PopoverView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            providerSwitcher
             header
             body(for: model.snapshot)
             footer
@@ -35,27 +36,79 @@ struct PopoverView: View {
 
     // MARK: Header
 
-    private var header: some View {
-        HStack(alignment: .firstTextBaseline) {
-            HStack(spacing: 6) {
-                StatusDot(color: DS.accent(model.overallSeverity))
-                Text("Claude Usage")
-                    .font(DS.label(13, weight: .semibold))
-                    .foregroundStyle(DS.ink)
+    private var providerSwitcher: some View {
+        HStack(spacing: 4) {
+            ForEach(UsageProvider.allCases) { provider in
+                if provider != UsageProvider.allCases.first {
+                    Text("|")
+                        .font(DS.label(10))
+                        .foregroundStyle(DS.inkFaint.opacity(0.65))
+                }
+                Button {
+                    model.selectProvider(provider)
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(provider.displayName)
+                        Text(providerPercent(provider))
+                            .font(DS.figure(10, weight: .semibold))
+                    }
+                    .font(DS.label(10.5, weight: model.selectedProvider == provider ? .semibold : .medium))
+                    .foregroundStyle(model.selectedProvider == provider ? DS.ink : DS.inkMuted)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 4)
+                    .background(
+                        Capsule()
+                            .fill(model.selectedProvider == provider ? DS.surface : Color.clear)
+                            .overlay(
+                                Capsule().strokeBorder(
+                                    model.selectedProvider == provider ? DS.surfaceStroke : Color.clear,
+                                    lineWidth: 1
+                                )
+                            )
+                    )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Show \(provider.displayName) usage")
             }
-            Spacer(minLength: 8)
-            Text(statusLine)
-                .font(DS.figure(10))
-                .foregroundStyle(DS.inkFaint)
+            Spacer(minLength: 0)
         }
         .panelRow()
-        .padding(.top, 12)
+        .padding(.top, 10)
+    }
+
+    private func providerPercent(_ provider: UsageProvider) -> String {
+        guard let percent = model.providerTightestPercent(provider, now: now) else { return "—" }
+        return "\(Int(percent.rounded()))%"
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(alignment: .firstTextBaseline) {
+                HStack(spacing: 6) {
+                    StatusDot(color: headerStatusColor)
+                    Text(model.selectedProvider.headerTitle)
+                        .font(DS.label(13, weight: .semibold))
+                        .foregroundStyle(DS.ink)
+                }
+                Spacer(minLength: 8)
+                Text(statusLine)
+                    .font(DS.figure(10))
+                    .foregroundStyle(DS.inkFaint)
+            }
+            if let note = model.selectedProvider.allowanceDescription {
+                Text(note)
+                    .font(DS.label(9.5))
+                    .foregroundStyle(DS.inkFaint)
+            }
+        }
+        .panelRow()
+        .padding(.top, 8)
         .padding(.bottom, 12)
     }
 
     private var statusLine: String {
         var parts: [String] = []
-        if let plan = model.profile?.planLabel { parts.append(plan) }
+        if let plan = model.planLabel { parts.append(plan) }
         if model.isRefreshing {
             parts.append("refreshing")
         } else if let last = model.lastSuccessAt {
@@ -64,16 +117,31 @@ struct PopoverView: View {
         return parts.joined(separator: " · ")
     }
 
+    private var headerStatusColor: Color {
+        if model.snapshot == nil { return DS.inkFaint }
+        if model.lastError != nil { return DS.tight }
+        return DS.accent(model.overallSeverity)
+    }
+
     // MARK: Body
 
     @ViewBuilder
     private func body(for snapshot: UsageSnapshot?) -> some View {
-        if model.snapshot == nil && model.lastError == .missingToken {
-            ConnectPrompt(model: model).padding(.bottom, 14)
+        if model.snapshot == nil && shouldShowConnectPrompt {
+            if model.selectedProvider == .claude {
+                ClaudeConnectPrompt(model: model).padding(.bottom, 14)
+            } else {
+                ChatGPTConnectPrompt(model: model).padding(.bottom, 14)
+            }
         } else if let snapshot {
             VStack(alignment: .leading, spacing: DS.Space.l) {
                 if let error = model.lastError {
-                    ErrorBanner(error: error, isShowingCached: true).panelRow()
+                    ErrorBanner(
+                        error: error,
+                        provider: model.selectedProvider,
+                        isShowingCached: true
+                    )
+                    .panelRow()
                 }
 
                 if let hero {
@@ -106,7 +174,15 @@ struct PopoverView: View {
                     }
                 }
 
-                if model.settings.activityEnabled {
+                if snapshot.provider == .chatgpt,
+                   snapshot.credits?.isPresentable == true || snapshot.spendControl != nil {
+                    VStack(alignment: .leading, spacing: DS.Space.m) {
+                        SectionRule()
+                        ChatGPTAccountMetadata(snapshot: snapshot, now: now)
+                    }
+                }
+
+                if model.selectedProvider == .claude && model.settings.activityEnabled {
                     VStack(alignment: .leading, spacing: DS.Space.m) {
                         SectionRule()
                         ActivitySectionView(activity: model.activity, now: now)
@@ -139,7 +215,12 @@ struct PopoverView: View {
         } else {
             VStack(alignment: .leading, spacing: 10) {
                 if let error = model.lastError {
-                    ErrorBanner(error: error, isShowingCached: false).panelRow()
+                    ErrorBanner(
+                        error: error,
+                        provider: model.selectedProvider,
+                        isShowingCached: false
+                    )
+                    .panelRow()
                 } else {
                     Text(emptyStateText)
                         .font(DS.label(11.5))
@@ -148,6 +229,16 @@ struct PopoverView: View {
                 }
             }
             .padding(.bottom, 14)
+        }
+    }
+
+    private var shouldShowConnectPrompt: Bool {
+        guard model.snapshot == nil else { return false }
+        switch model.lastError {
+        case .missingToken, .unauthorized, .forbidden, .codexAuthenticationRequired, .cliNotFound:
+            return true
+        default:
+            return false
         }
     }
 
@@ -162,9 +253,7 @@ struct PopoverView: View {
         HStack(spacing: 2) {
             IconButton(symbol: "arrow.clockwise", help: "Refresh now") { model.refreshNow() }
             IconButton(symbol: "chart.bar.doc.horizontal", help: "Open dashboard") {
-                if let url = URL(string: model.settings.dashboardURL) {
-                    NSWorkspace.shared.open(url)
-                }
+                NSWorkspace.shared.open(model.dashboardURL(for: model.selectedProvider))
             }
             SettingsLink {
                 Image(systemName: "slider.horizontal.3")
@@ -206,6 +295,7 @@ struct PopoverView: View {
 
 private struct ErrorBanner: View {
     let error: UsageAPIError
+    let provider: UsageProvider
     let isShowingCached: Bool
 
     var body: some View {
@@ -215,10 +305,14 @@ private struct ErrorBanner: View {
                 .foregroundStyle(tint)
                 .padding(.top, 1)
             VStack(alignment: .leading, spacing: 2) {
-                Text(error.title)
+                Text(error.title(for: provider))
                     .font(DS.label(11, weight: .semibold))
                     .foregroundStyle(DS.ink)
-                Text(isShowingCached ? "\(error.detail) Showing the last values received." : error.detail)
+                Text(
+                    isShowingCached
+                        ? "\(error.detail(for: provider)) Showing the last values received."
+                        : error.detail(for: provider)
+                )
                     .font(DS.label(10.5))
                     .foregroundStyle(DS.inkMuted)
                     .fixedSize(horizontal: false, vertical: true)
@@ -236,7 +330,9 @@ private struct ErrorBanner: View {
 
     private var symbol: String {
         switch error {
-        case .unauthorized, .forbidden, .missingToken: return "key.slash"
+        case .unauthorized, .forbidden, .missingToken, .codexAuthenticationRequired:
+            return "key.slash"
+        case .cliNotFound, .unsupportedCLI: return "terminal"
         case .offline: return "wifi.slash"
         case .rateLimited: return "hourglass"
         case .unrecognizedSchema, .invalidJSON: return "questionmark.diamond"
@@ -247,7 +343,7 @@ private struct ErrorBanner: View {
 
 // MARK: - First run
 
-private struct ConnectPrompt: View {
+private struct ClaudeConnectPrompt: View {
     @Bindable var model: AppModel
     @State private var pasted: String = ""
     @State private var failed = false
@@ -284,5 +380,84 @@ private struct ConnectPrompt: View {
             }
         }
         .panelRow()
+    }
+}
+
+private struct ChatGPTConnectPrompt: View {
+    @Bindable var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Text("Connect with Codex")
+                .font(DS.label(12, weight: .semibold))
+                .foregroundStyle(DS.ink)
+            Text(message)
+                .font(DS.label(11))
+                .foregroundStyle(DS.inkMuted)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 8) {
+                Button("Setup instructions") {
+                    if let url = URL(string: "https://developers.openai.com/codex/auth/") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+                Button("Look again") { model.refreshNow() }
+                Spacer()
+            }
+            .controlSize(.small)
+
+            Text("The tracker never starts an interactive login or asks for an API key.")
+                .font(DS.label(10))
+                .foregroundStyle(DS.inkFaint)
+        }
+        .panelRow()
+    }
+
+    private var message: String {
+        let state = model.state(for: .chatgpt)
+        if state.cliDetected == false {
+            return "Install the Codex CLI and sign in to ChatGPT from Codex. Usage will load automatically after you choose to sign in."
+        }
+        return "Codex is installed, but its ChatGPT sign-in needs attention. Open Codex or run codex login when you are ready."
+    }
+}
+
+private struct ChatGPTAccountMetadata: View {
+    let snapshot: UsageSnapshot
+    let now: Date
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Eyebrow(text: "Account allowance")
+            if let credits = snapshot.credits, credits.isPresentable {
+                metadataRow("Credits", creditsText(credits))
+            }
+            if let control = snapshot.spendControl {
+                metadataRow("Spend control", "\(control.used) of \(control.limit)")
+                if let resetsAt = control.resetsAt {
+                    Text("Resets in \(Format.duration(max(0, resetsAt.timeIntervalSince(now))))")
+                        .font(DS.label(10))
+                        .foregroundStyle(DS.inkFaint)
+                }
+            }
+        }
+        .panelRow()
+    }
+
+    private func metadataRow(_ label: String, _ value: String) -> some View {
+        HStack {
+            Text(label).font(DS.label(11)).foregroundStyle(DS.inkMuted)
+            Spacer()
+            Text(value).font(DS.figure(10.5, weight: .semibold)).foregroundStyle(DS.ink)
+        }
+    }
+
+    private func creditsText(_ credits: UsageCredits) -> String {
+        if credits.unlimited == true { return "Unlimited" }
+        if let balance = credits.balance { return balance }
+        if credits.hasCredits == true { return "Available" }
+        if credits.hasCredits == false { return "None" }
+        return "Available"
     }
 }

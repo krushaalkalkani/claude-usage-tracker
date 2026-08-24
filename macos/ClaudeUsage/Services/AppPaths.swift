@@ -16,6 +16,15 @@ public enum AppPaths {
     public static var eventsFile: URL { root.appendingPathComponent("events.jsonl") }
     public static var notificationLedgerFile: URL { root.appendingPathComponent("notifications.json") }
     public static var lastUsageFile: URL { root.appendingPathComponent("last-usage.json") }
+    public static func lastUsageFile(for provider: UsageProvider) -> URL {
+        switch provider {
+        case .claude:
+            // Preserve the v2 filename so existing cached Claude data migrates in place.
+            return lastUsageFile
+        case .chatgpt:
+            return root.appendingPathComponent("last-usage-chatgpt.json")
+        }
+    }
 
     @discardableResult
     public static func ensureRoot() -> Bool {

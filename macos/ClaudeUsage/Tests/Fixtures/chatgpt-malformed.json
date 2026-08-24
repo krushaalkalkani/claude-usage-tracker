@@ -1,0 +1,31 @@
+{
+  "rate_limit": {
+    "primary_window": {
+      "used_percent": 133.5,
+      "reset_at": 1790000000.9,
+      "limit_window_seconds": 18000
+    },
+    "secondary_window": {
+      "used_percent": "not-a-number",
+      "reset_at": -50,
+      "limit_window_seconds": "bad"
+    }
+  },
+  "additional_rate_limits": [
+    {
+      "limit_name": "Invented Model",
+      "metered_feature": "invented_model",
+      "rate_limit": {
+        "secondary_window": {
+          "used_percent": 73,
+          "reset_at": 1790600000,
+          "limit_window_seconds": 604800
+        }
+      }
+    },
+    {
+      "limit_name": "Broken Entry"
+    },
+    17
+  ]
+}

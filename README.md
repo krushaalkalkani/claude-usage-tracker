@@ -1,14 +1,15 @@
 # Claude Usage Tracker v2
 
-Know how much Claude quota you have left, how fast you are burning it, whether you will run
-out before the reset — and what Claude Code is doing right now — without leaving the menu bar.
+Know how much Claude and ChatGPT Codex/agentic quota you have left, how fast you are burning
+it, whether you will run out before the reset - and what Claude Code is doing right now -
+without leaving the menu bar.
 
 Two clients, one data model:
 
 | | |
 |---|---|
-| **Native macOS menu bar app** | SwiftUI `MenuBarExtra`, notifications, local history, Claude Code activity. The main event. |
-| **Web dashboard** | React + Vite. Gauges, charts, CSV export. Runs anywhere. |
+| **Native macOS menu bar app** | SwiftUI `MenuBarExtra`, Claude plus ChatGPT Codex/agentic usage, notifications, local history, and Claude Code activity. The main event. |
+| **Web dashboard** | React + Vite. Claude gauges, charts, and CSV export. ChatGPT support is native-only in this release. |
 
 | Plenty left | Running out | Weekly is the constraint |
 |---|---|---|
@@ -51,11 +52,16 @@ line.
 
 **Usage**
 - 5-hour session and 7-day windows, with time-to-reset and the exact reset clock time.
+- One native popover with a persistent Claude / ChatGPT provider switcher. ChatGPT is labeled
+  **Codex / agentic allowance** because it is not a universal meter for ordinary ChatGPT chats.
+- ChatGPT windows come from the signed-in local Codex CLI, including additional model-specific
+  limits and provider-supplied window durations when available.
 - **Model-specific limits** — read from the API's `limits[]` array, which is where Anthropic
   actually exposes them. The section is hidden entirely when your account has none.
 - **Extra usage / spend** in real money, respecting the currency exponent the API sends.
-- The menu bar shows the limit **closest to its ceiling**, not just the session — so
-  `5h = 25%, 7d = 91%` reads as *91%*, tagged `W`, instead of a comfortable-looking 25%.
+- The menu bar follows the selected provider: `A` for Anthropic/Claude and `O` for
+  OpenAI/ChatGPT. Within that provider it still shows the real limit **closest to its ceiling**,
+  so `5h = 25%, 7d = 91%` reads as *91%*, tagged `W`, instead of a comfortable-looking 25%.
 
 **Analytics**
 - Burn rate (%/hour), average per day, projected utilisation at reset, estimated time to 100%.
@@ -75,8 +81,8 @@ line.
 
 **Everything else**
 - Local history with 24 h / 7 d / 30 d retention and a sparkline.
-- Last-known-good values on error — never a screen of zeros.
-- Keychain credentials, no telemetry, no backend.
+- Provider-specific last-known-good values on error - never a screen of zeros.
+- Credentials remain managed by Claude/Codex, with no telemetry and no backend.
 
 ---
 
@@ -124,13 +130,27 @@ Then open http://localhost:5173. Deployed builds work through the `vercel.json` 
 
 ## Authentication
 
+### Claude
+
 The native app looks for a token in this order:
 
-1. **Its own keychain item** — anything you paste into Settings › General.
-2. **Claude Code's credentials** — `Claude Code-credentials` in your login keychain. If you are
+1. **Its own keychain item** - anything you paste into Settings › Providers.
+2. **Claude Code's credentials** - `Claude Code-credentials` in your login keychain. If you are
    signed in to Claude Code, the app just works. macOS asks your permission the first time it
    reads the item; that prompt is the consent point.
-3. **`~/.claude-usage-token`** — the plaintext file v1 used. Still read, for compatibility.
+3. **`~/.claude-usage-token`** - the plaintext file v1 used. Still read, for compatibility.
+
+### ChatGPT - Codex/agentic usage
+
+The native app locates the installed `codex` executable, starts only its noninteractive,
+read-only app-server, and calls `account/read` plus `account/rateLimits/read`. It never opens
+the Codex TUI, submits a prompt, or starts an interactive login.
+
+If an installed Codex version cannot provide rate limits, the app can read the existing local
+Codex OAuth file without modifying it and make an ephemeral fallback request to
+`https://chatgpt.com/backend-api/wham/usage`. Codex remains the credential owner. The tracker
+does not store ChatGPT credentials and does not use an OpenAI API key. ChatGPT subscriptions
+and OpenAI API billing are separate products.
 
 The web dashboard needs a token pasted in (browsers cannot read your keychain). Get one with:
 
@@ -152,18 +172,23 @@ CLAUDE_CODE_OAUTH_TOKEN="$(security find-generic-password -s 'Claude Code-creden
 Everything is local. There is no server belonging to this project, no analytics endpoint, and
 no crash reporter.
 
-**Network:** exactly one destination — `api.anthropic.com`, once per refresh interval.
+**Network:** Claude usage goes to `api.anthropic.com`. ChatGPT/Codex usage normally travels
+through the local Codex app-server; the isolated fallback goes to `chatgpt.com`. There are no
+project analytics or backend destinations.
 
-**Your token** lives in the login keychain. It is never written to a file by this app, never
-logged, and never included in the debug report. `URLSession` runs with an ephemeral
-configuration and no cache, so responses are not written to disk behind your back.
+**Credentials:** Claude credentials live in the login keychain or remain managed by Claude
+Code. ChatGPT credentials remain managed by Codex. The tracker never modifies Codex's OAuth
+file or stores ChatGPT credentials. Credentials, account identifiers, emails, prompts,
+responses, and session content are not logged or included in copied debug reports. Network
+fallbacks use an ephemeral `URLSession` with no cache or cookie storage.
 
 **Stored locally**, under `~/.claude-usage-tracker/` (mode `700`):
 
 | File | Contents |
 |---|---|
-| `history.json` | usage percentages + timestamps |
-| `last-usage.json` | the most recent parsed snapshot, so a cold launch isn't blank |
+| `history.json` | provider-qualified usage percentages + timestamps |
+| `last-usage.json` | the most recent Claude snapshot, so a cold launch isn't blank |
+| `last-usage-chatgpt.json` | the most recent ChatGPT snapshot; no raw response or credentials |
 | `sessions/*.json` | Claude Code session metadata, one file per session |
 | `events.jsonl` | the last 200 hook **event names** and timestamps |
 | `activity.json` | a rollup for anything else you want to wire up (status bars, scripts) |
@@ -176,8 +201,8 @@ name, tool **name**, permission mode, effort level, agent type, and counters.
 no setting to enable that — the code to write it does not exist. The hook test suite asserts
 this (`macos/scripts/test-hook.sh`).
 
-Delete everything with `rm -rf ~/.claude-usage-tracker` and the keychain item from
-Settings › General › Remove stored token.
+Delete everything with `rm -rf ~/.claude-usage-tracker` and the Claude keychain item from
+Settings › Providers › Remove stored token.
 
 ---
 
@@ -196,12 +221,12 @@ claude-usage-tracker/
 │   │   ├── install-hooks.sh  uninstall-hooks.sh
 │   │   └── test-hook.sh              end-to-end hook tests
 │   └── ClaudeUsage/
-│       ├── Models/       UsageSnapshot, LimitWindow, SpendInfo, ActivityState, JSONValue
-│       ├── Services/     API client, TokenStore, HistoryStore, ActivityMonitor, Settings
+│       ├── Models/       provider models, usage parsers, limits, activity, JSONValue
+│       ├── Services/     Anthropic API, Codex app-server/fallback, stores, activity, settings
 │       ├── Analytics/    burn rate, projection, surge detection  (pure)
 │       ├── Notifications/ policy (pure) + UNUserNotificationCenter delivery
 │       ├── App/  Views/  Resources/
-│       └── Tests/        87 tests + sanitized fixtures
+│       └── Tests/        108 tests + sanitized fixtures
 └── docs/MENUBAR_V2_PLAN.md           design record + full API field inventory
 ```
 
@@ -209,12 +234,12 @@ claude-usage-tracker/
 wrong (parsing, analytics, notification policy, activity aggregation) lives there and is unit
 tested. **`ClaudeUsageApp`** is the SwiftUI executable on top.
 
-Both the Swift and JavaScript parsers produce the same limit ids, so history recorded by one
-client is readable by the other.
+The web client remains Claude-only. The native history schema adds provider identity while
+decoding all existing provider-less history and cached snapshots as Claude.
 
 ---
 
-## API limitations — read this
+## API limitations - read this
 
 The app reads `https://api.anthropic.com/api/oauth/usage`, the endpoint that powers Claude
 Code's own `/usage` display.
@@ -248,6 +273,12 @@ export and otherwise ignored.
 A full field inventory, with types and example values, is in
 [docs/MENUBAR_V2_PLAN.md](docs/MENUBAR_V2_PLAN.md#2-api-field-inventory).
 
+ChatGPT/Codex rate limits are read first from the local Codex app-server. The direct
+`/backend-api/wham/usage` fallback is internal and undocumented, isolated behind a replaceable
+transport and defensive parser. Missing or malformed windows stay unknown rather than
+becoming 0%. The tracker uses provider-supplied window durations and epoch reset timestamps,
+and never persists the untouched response.
+
 ### Known limitations
 
 - **Sessions that started before you installed the hooks are invisible.** Hooks load at
@@ -263,6 +294,10 @@ A full field inventory, with types and example values, is in
   section is hidden rather than faked.
 - **Dollar figures per window** (`limit_dollars`, `used_dollars`) are `null` on subscription
   plans; those rows appear only if your account populates them.
+- **ChatGPT means Codex/agentic allowance only.** OpenAI exposes separate allowances for
+  models and features and does not provide one public universal consumer-chat usage meter.
+- **Codex CLI behavior can change.** If the app-server and isolated fallback both stop matching
+  known shapes, the app keeps the last-known-good ChatGPT values and reports a sanitized error.
 
 ---
 
@@ -277,7 +312,7 @@ npm run build
 # Swift core + app
 cd macos
 swift build                    # library + app
-swift test                     # 87 tests, swift-testing
+swift test                     # 108 tests, swift-testing
 ./scripts/build-app.sh         # → build/ClaudeUsage.app
 
 # Claude Code hook (46 assertions, runs against a throwaway HOME)
@@ -286,20 +321,26 @@ swift test                     # 87 tests, swift-testing
 
 Test fixtures in `macos/ClaudeUsage/Tests/Fixtures/` are **sanitized** — no real identifiers,
 no tokens. They cover the current shape, the legacy shape, an empty payload, malformed
-entries, and a deliberately unknown future shape.
+entries, a deliberately unknown future shape, ChatGPT session/weekly windows, additional
+model limits, missing windows, malformed entries, auth failures, and process cleanup.
 
 ---
 
 ## Troubleshooting
 
 **Menu bar shows `—` or "Not connected"**
-Settings › General shows which credential sources were detected. If none, paste a token or
+Settings › Providers shows which Claude credential sources were detected. If none, paste a token or
 sign in to Claude Code. If macOS asked for keychain access and you clicked Deny, grant it in
 Keychain Access for the `Claude Code-credentials` item.
 
 **"Authentication expired"**
 The OAuth token was rejected. Re-run `claude` to refresh Claude Code's credentials, or paste a
 fresh token in Settings.
+
+**"Codex login required" or "Codex login needs refresh"**
+Open Codex or run `codex login` yourself, then refresh. The tracker never starts an
+interactive login automatically. Do not paste an OpenAI API key; it does not represent your
+ChatGPT subscription allowance.
 
 **"Rate limited"**
 The usage endpoint has its own rate limit, separate from your Claude quota. The app backs off
@@ -344,7 +385,7 @@ rm -rf ~/.claude-usage-tracker
 rm -f ~/.claude-usage-token
 ```
 
-The keychain item is removed from Settings › General › Remove stored token, or with:
+The Claude keychain item is removed from Settings › Providers › Remove stored token, or with:
 
 ```bash
 security delete-generic-password -s "com.krushal.claude-usage-tracker"
@@ -357,4 +398,4 @@ clears it.
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Not affiliated with or endorsed by Anthropic.
+MIT - see [LICENSE](LICENSE). Not affiliated with or endorsed by Anthropic or OpenAI.

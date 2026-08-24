@@ -35,6 +35,9 @@ public enum LimitGroup: String, Sendable, Codable {
 
 /// One normalized quota window, whatever shape the API delivered it in.
 public struct LimitWindow: Sendable, Codable, Identifiable, Equatable {
+    /// Provider ownership is part of the window identity once data from more than one service
+    /// shares history and notification storage. Older persisted windows decode as Claude.
+    public let provider: UsageProvider
     /// Stable identity used for history keys and notification dedup.
     public let id: String
     /// Raw `kind` from the API (`session`, `weekly_all`, `weekly_scoped`, …) or a synthesized
@@ -45,8 +48,14 @@ public struct LimitWindow: Sendable, Codable, Identifiable, Equatable {
     public let title: String
     /// Short label for compact contexts, e.g. "Session", "Weekly", "Fable".
     public let shortTitle: String
+    /// Display value. Provider parsers clamp unsafe values before constructing the window.
     public let percent: Double
+    /// Original percentage when it differed from the safe display value. This is harmless
+    /// numeric diagnostics, not a raw response body or account identifier.
+    public let rawPercent: Double?
     public let resetsAt: Date?
+    /// Actual duration supplied by the provider. Analytics prefers this over group defaults.
+    public let windowDuration: TimeInterval?
     public let severity: Severity
     /// The API's `is_active` — the limit currently in force for the session.
     public let isActive: Bool
@@ -75,15 +84,21 @@ public struct LimitWindow: Sendable, Codable, Identifiable, Equatable {
         surface: String? = nil,
         usedDollars: Double? = nil,
         limitDollars: Double? = nil,
-        remainingDollars: Double? = nil
+        remainingDollars: Double? = nil,
+        provider: UsageProvider = .claude,
+        rawPercent: Double? = nil,
+        windowDuration: TimeInterval? = nil
     ) {
+        self.provider = provider
         self.id = id
         self.kind = kind
         self.group = group
         self.title = title
         self.shortTitle = shortTitle
         self.percent = percent
+        self.rawPercent = rawPercent
         self.resetsAt = resetsAt
+        self.windowDuration = windowDuration
         self.severity = severity
         self.isActive = isActive
         self.modelName = modelName
@@ -94,6 +109,10 @@ public struct LimitWindow: Sendable, Codable, Identifiable, Equatable {
         self.remainingDollars = remainingDollars
     }
 
+    /// Provider-qualified identity for cross-provider history, analytics, and notification
+    /// bookkeeping. `id` remains provider-local so existing Claude history keys stay intact.
+    public var storageIdentity: String { "\(provider.rawValue)#\(id)" }
+
     public var remainingPercent: Double { max(0, 100 - percent) }
 
     /// True when this window is scoped to a specific model — the "model limits" section.
@@ -102,6 +121,34 @@ public struct LimitWindow: Sendable, Codable, Identifiable, Equatable {
     public func timeUntilReset(now: Date) -> TimeInterval? {
         guard let resetsAt else { return nil }
         return max(0, resetsAt.timeIntervalSince(now))
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case provider, id, kind, group, title, shortTitle, percent, rawPercent, resetsAt
+        case windowDuration, severity, isActive, modelName, modelID, surface
+        case usedDollars, limitDollars, remainingDollars
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        provider = try c.decodeIfPresent(UsageProvider.self, forKey: .provider) ?? .claude
+        id = try c.decode(String.self, forKey: .id)
+        kind = try c.decode(String.self, forKey: .kind)
+        group = try c.decode(LimitGroup.self, forKey: .group)
+        title = try c.decode(String.self, forKey: .title)
+        shortTitle = try c.decode(String.self, forKey: .shortTitle)
+        percent = try c.decode(Double.self, forKey: .percent)
+        rawPercent = try c.decodeIfPresent(Double.self, forKey: .rawPercent)
+        resetsAt = try c.decodeIfPresent(Date.self, forKey: .resetsAt)
+        windowDuration = try c.decodeIfPresent(TimeInterval.self, forKey: .windowDuration)
+        severity = try c.decode(Severity.self, forKey: .severity)
+        isActive = try c.decodeIfPresent(Bool.self, forKey: .isActive) ?? false
+        modelName = try c.decodeIfPresent(String.self, forKey: .modelName)
+        modelID = try c.decodeIfPresent(String.self, forKey: .modelID)
+        surface = try c.decodeIfPresent(String.self, forKey: .surface)
+        usedDollars = try c.decodeIfPresent(Double.self, forKey: .usedDollars)
+        limitDollars = try c.decodeIfPresent(Double.self, forKey: .limitDollars)
+        remainingDollars = try c.decodeIfPresent(Double.self, forKey: .remainingDollars)
     }
 }
 

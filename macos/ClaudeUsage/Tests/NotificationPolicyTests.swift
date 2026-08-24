@@ -467,8 +467,8 @@ struct NotificationPolicyTests {
             ledger: &ledger
         )
         #expect(out.isEmpty)
-        #expect(ledger.lastPercent["session"] == 95)
-        #expect(ledger.lastResetSeen["session"] == reset)
+        #expect(ledger.lastPercent["claude#session"] == 95)
+        #expect(ledger.lastResetSeen["claude#session"] == reset)
     }
 
     @Test("the ledger survives a round trip through disk")

@@ -16,38 +16,66 @@ public enum UsageAPIError: Error, Equatable, Sendable {
     case invalidJSON
     /// The JSON parsed, but nothing recognizable as usage data was in it.
     case unrecognizedSchema(String)
+    case cliNotFound
+    case codexAuthenticationRequired
+    case cliTimedOut
+    case cliUnavailable
+    case unsupportedCLI
 
     public var isTransient: Bool {
         switch self {
-        case .rateLimited, .server, .offline, .timedOut, .network: return true
+        case .rateLimited, .server, .offline, .timedOut, .network, .cliTimedOut, .cliUnavailable:
+            return true
         default: return false
         }
     }
 
     public var title: String {
+        title(for: .claude)
+    }
+
+    public func title(for provider: UsageProvider) -> String {
         switch self {
-        case .missingToken: return "Not connected"
-        case .unauthorized: return "Authentication expired"
+        case .missingToken:
+            return provider == .chatgpt ? "Codex login required" : "Not connected"
+        case .unauthorized:
+            return provider == .chatgpt ? "Codex login needs refresh" : "Authentication expired"
         case .forbidden: return "Access denied"
         case .rateLimited: return "Rate limited"
-        case .server: return "Anthropic is having trouble"
+        case .server:
+            return provider == .chatgpt ? "ChatGPT usage is unavailable" : "Anthropic is having trouble"
         case .http: return "Unexpected response"
         case .offline: return "Offline"
         case .timedOut: return "Request timed out"
         case .network: return "Network error"
         case .invalidJSON: return "Unreadable response"
         case .unrecognizedSchema: return "Usage format not recognized"
+        case .cliNotFound: return "Codex CLI not found"
+        case .codexAuthenticationRequired: return "Codex login required"
+        case .cliTimedOut: return "Codex CLI timed out"
+        case .cliUnavailable: return "Codex CLI unavailable"
+        case .unsupportedCLI: return "Codex CLI update needed"
         }
     }
 
     public var detail: String {
+        detail(for: .claude)
+    }
+
+    public func detail(for provider: UsageProvider) -> String {
         switch self {
         case .missingToken:
-            return "Add an OAuth token in Settings, or sign in to Claude Code."
+            return provider == .chatgpt
+                ? "Open Codex or run codex login, then refresh."
+                : "Add an OAuth token in Settings, or sign in to Claude Code."
         case .unauthorized:
-            return "The token was rejected. Reconnect in Settings."
+            return provider == .chatgpt
+                ? "Open Codex or run codex login to refresh its credentials."
+                : "The token was rejected. Reconnect in Settings."
         case .forbidden:
-            return "This token is not allowed to read usage."
+            return provider == .chatgpt
+                ? "Open Codex or run codex login to refresh its credentials."
+                : "This token is not allowed to read usage."
         case .rateLimited(let after):
             if let after { return "Retrying in \(Int(after.rounded()))s." }
             return "Backing off before the next attempt."
@@ -65,6 +93,16 @@ public enum UsageAPIError: Error, Equatable, Sendable {
             return "The response was not valid JSON."
         case .unrecognizedSchema(let note):
             return note
+        case .cliNotFound:
+            return "Install the Codex CLI and sign in. No interactive login was started."
+        case .codexAuthenticationRequired:
+            return "Open Codex or run codex login, then refresh."
+        case .cliTimedOut:
+            return "The read-only Codex app-server did not respond in time."
+        case .cliUnavailable:
+            return "The read-only Codex app-server could not return usage."
+        case .unsupportedCLI:
+            return "This Codex version does not expose account rate limits. Update Codex and refresh."
         }
     }
 }

@@ -13,21 +13,9 @@ public final class AppModel {
 
     // MARK: Published state
 
-    public private(set) var snapshot: UsageSnapshot?
+    public private(set) var providerStates: [UsageProvider: ProviderUsageState]
     public private(set) var profile: AccountProfile?
     public private(set) var activity: ActivityState = .unavailable
-    public private(set) var samples: [UsageSample] = []
-    /// Recomputed once per poll — see `recomputeAnalytics()`.
-    public private(set) var projections: [String: UsageProjection] = [:]
-    public private(set) var surgingLimitIDs: Set<String> = []
-    public private(set) var weeklyAveragePerDay: Double?
-    public private(set) var lastError: UsageAPIError?
-    /// True while a fetch is in flight.
-    public private(set) var isRefreshing = false
-    /// When the last *successful* fetch landed. Drives "Updated N ago" and staleness.
-    public private(set) var lastSuccessAt: Date?
-    /// Set when the displayed snapshot came from disk rather than this session's network.
-    public private(set) var isShowingCachedData = false
     public private(set) var tokenSource: TokenSource?
     /// Credential sources the server rejected this run.
     ///
@@ -37,6 +25,7 @@ public final class AppModel {
     private var rejectedSources: Set<TokenSource> = []
     public private(set) var notificationAvailability: NotificationService.Availability = .notDetermined
     public private(set) var launchAtLoginState: LaunchAtLogin.State = .unavailable
+    public private(set) var selectedProvider: UsageProvider
     /// Ticks once a second only while the popover is open, so countdowns move without the
     /// whole app re-rendering all day.
     public private(set) var tick: Date = Date()
@@ -46,52 +35,92 @@ public final class AppModel {
 
     public var settings: AppSettings { settingsStore.current }
 
+    public var snapshot: UsageSnapshot? { state(for: selectedProvider).snapshot }
+    public var samples: [UsageSample] { state(for: selectedProvider).samples }
+    public var projections: [String: UsageProjection] { state(for: selectedProvider).projections }
+    public var surgingLimitIDs: Set<String> { state(for: selectedProvider).surgingLimitIDs }
+    public var weeklyAveragePerDay: Double? { state(for: selectedProvider).weeklyAveragePerDay }
+    public var lastError: UsageAPIError? { state(for: selectedProvider).lastError }
+    public var isRefreshing: Bool { state(for: selectedProvider).isRefreshing }
+    public var lastSuccessAt: Date? { state(for: selectedProvider).lastSuccessAt }
+    public var isShowingCachedData: Bool { state(for: selectedProvider).isShowingCachedData }
+    public var planLabel: String? { state(for: selectedProvider).planLabel }
+
     // MARK: Dependencies
 
     private let api: UsageAPIClientProtocol
+    private let chatGPT: ChatGPTUsageServiceProtocol
     private let tokenStore: TokenStore
     private let history: HistoryStore
     private let settingsStore: SettingsStore
     private let activityMonitor: ActivityMonitor
     private let notifications: NotificationService
+    /// Non-nil only for deterministic preview rendering, so settings previews never query
+    /// the user's keychain or filesystem for credential availability.
+    private let previewTokenSources: [TokenSource]?
     private let backoff = BackoffPolicy()
     private var ledger: NotificationLedger
 
     private var refreshTask: Task<Void, Never>?
     private var tickTask: Task<Void, Never>?
     private var activityWatcher: ActivityWatcher?
-    private var consecutiveFailures = 0
     /// Profile metadata changes rarely; fetch it at most once an hour.
     private var lastProfileFetch: Date?
     private static let profileInterval: TimeInterval = 3_600
 
     public init(
         api: UsageAPIClientProtocol = UsageAPIClient(),
+        chatGPT: ChatGPTUsageServiceProtocol = ChatGPTUsageService(),
         tokenStore: TokenStore = TokenStore(),
         history: HistoryStore = HistoryStore(),
         settingsStore: SettingsStore = SettingsStore(),
         activityMonitor: ActivityMonitor = ActivityMonitor(),
-        notifications: NotificationService = NotificationService()
+        notifications: NotificationService = NotificationService(),
+        previewTokenSources: [TokenSource]? = nil,
+        loadsPersistentState: Bool = true
     ) {
+        self.providerStates = Dictionary(
+            uniqueKeysWithValues: UsageProvider.allCases.map { ($0, ProviderUsageState(provider: $0)) }
+        )
+        self.selectedProvider = settingsStore.current.selectedProvider
         self.api = api
+        self.chatGPT = chatGPT
         self.tokenStore = tokenStore
         self.history = history
         self.settingsStore = settingsStore
         self.activityMonitor = activityMonitor
         self.notifications = notifications
-        self.ledger = NotificationLedgerStore.load()
+        self.previewTokenSources = previewTokenSources
+        self.ledger = loadsPersistentState ? NotificationLedgerStore.load() : NotificationLedger()
 
-        AppPaths.ensureRoot()
-        self.samples = history.load()
-        // Show the last known values immediately, clearly labelled as cached, rather than
-        // an empty panel or a row of zeros.
-        if let cached = LastUsageCache.load() {
-            self.snapshot = cached
-            self.lastSuccessAt = cached.fetchedAt
-            self.isShowingCachedData = true
+        if loadsPersistentState { AppPaths.ensureRoot() }
+        for provider in UsageProvider.allCases {
+            updateProvider(provider) { state in
+                state.samples = history.load(provider: provider)
+                // Show each provider's last known values immediately and independently.
+                if loadsPersistentState, let cached = LastUsageCache.load(provider: provider) {
+                    state.snapshot = cached
+                    state.lastSuccessAt = cached.fetchedAt
+                    state.isShowingCachedData = true
+                    state.connectionState = .unknown
+                }
+            }
         }
         self.launchAtLoginState = LaunchAtLogin.state
-        recomputeAnalytics()
+        for provider in UsageProvider.allCases { recomputeAnalytics(for: provider) }
+    }
+
+    public func state(for provider: UsageProvider) -> ProviderUsageState {
+        providerStates[provider] ?? ProviderUsageState(provider: provider)
+    }
+
+    private func updateProvider(
+        _ provider: UsageProvider,
+        _ mutate: (inout ProviderUsageState) -> Void
+    ) {
+        var state = providerStates[provider] ?? ProviderUsageState(provider: provider)
+        mutate(&state)
+        providerStates[provider] = state
     }
 
     // MARK: Lifecycle
@@ -129,7 +158,7 @@ public final class AppModel {
             // One loop, one in-flight request. No overlapping fetches by construction.
             while !Task.isCancelled {
                 guard let self else { return }
-                await self.refreshUsage()
+                await self.refreshAllUsage()
                 if Task.isCancelled { return }
                 let delay = await MainActor.run { self.nextDelay() }
                 try? await Task.sleep(for: .seconds(delay))
@@ -138,14 +167,7 @@ public final class AppModel {
     }
 
     private func nextDelay() -> TimeInterval {
-        guard consecutiveFailures > 0 else {
-            return TimeInterval(settings.refreshInterval.rawValue)
-        }
-        let retryAfter: TimeInterval?
-        if case .rateLimited(let after) = lastError { retryAfter = after } else { retryAfter = nil }
-        let backoffDelay = backoff.delay(failureCount: consecutiveFailures, retryAfter: retryAfter)
-        // Never poll *more* often than the user asked for, even on the first retry.
-        return max(backoffDelay, TimeInterval(settings.refreshInterval.rawValue))
+        TimeInterval(settings.refreshInterval.rawValue)
     }
 
     /// The 1 Hz clock exists only while the panel is visible.
@@ -181,7 +203,12 @@ public final class AppModel {
     public func refreshNow() {
         // Restarting the loop both fetches immediately and resets the schedule, so a manual
         // refresh cannot leave two loops running.
-        consecutiveFailures = 0
+        for provider in UsageProvider.allCases {
+            updateProvider(provider) {
+                $0.consecutiveFailures = 0
+                $0.nextRetryAt = nil
+            }
+        }
         // Give every credential another go: hitting Refresh is exactly what someone does
         // after re-authenticating somewhere else.
         rejectedSources.removeAll()
@@ -189,19 +216,32 @@ public final class AppModel {
         startRefreshLoop()
     }
 
-    private func refreshUsage() async {
-        guard !isRefreshing else { return }
-        isRefreshing = true
-        defer { isRefreshing = false }
+    private func refreshAllUsage() async {
+        async let claude: Void = refreshClaudeUsage()
+        async let chatgpt: Void = refreshChatGPTUsage()
+        _ = await (claude, chatgpt)
+    }
+
+    private func shouldRefresh(_ provider: UsageProvider, now: Date = Date()) -> Bool {
+        let state = state(for: provider)
+        guard !state.isRefreshing else { return false }
+        guard let retry = state.nextRetryAt else { return true }
+        return retry <= now
+    }
+
+    private func refreshClaudeUsage() async {
+        guard shouldRefresh(.claude) else { return }
+        updateProvider(.claude) { $0.isRefreshing = true }
+        defer { updateProvider(.claude) { $0.isRefreshing = false } }
 
         // Walk the credential chain. A source the server refuses is set aside and the next
-        // one is tried straight away — the previous version re-sent the same rejected token
-        // every couple of minutes indefinitely while a working credential sat unused behind
-        // it in the priority order.
+        // one is tried straight away — otherwise the same rejected token is re-sent every
+        // couple of minutes while a working credential sits unused behind it in the order.
         while true {
             guard let token = tokenStore.resolve(excluding: rejectedSources) else {
                 tokenSource = nil
-                recordFailure(rejectedSources.isEmpty ? .missingToken : .unauthorized)
+                recordFailure(rejectedSources.isEmpty ? .missingToken : .unauthorized,
+                              for: .claude)
                 return
             }
             tokenSource = token.source
@@ -214,7 +254,7 @@ public final class AppModel {
 
             do {
                 let fresh = try await api.fetchUsage(token: token.value)
-                handleSuccess(fresh)
+                handleSuccess(fresh, planLabel: profile?.planLabel, source: .anthropicOAuth)
                 await maybeFetchProfile(token: token.value)
                 return
             } catch is CancellationError {
@@ -225,31 +265,66 @@ public final class AppModel {
                     tokenStore.invalidateCache()
                     continue
                 }
-                recordFailure(error)
+                recordFailure(error, for: .claude)
                 return
             } catch {
-                recordFailure(.network(error.localizedDescription))
+                recordFailure(.network(error.localizedDescription), for: .claude)
                 return
             }
         }
     }
 
-    private func handleSuccess(_ fresh: UsageSnapshot) {
-        consecutiveFailures = 0
-        lastError = nil
-        snapshot = fresh
-        lastSuccessAt = fresh.fetchedAt
-        isShowingCachedData = false
+    private func refreshChatGPTUsage() async {
+        guard shouldRefresh(.chatgpt) else { return }
+        updateProvider(.chatgpt) {
+            $0.isRefreshing = true
+            $0.cliDetected = chatGPT.isCLIDetected()
+        }
+        defer { updateProvider(.chatgpt) { $0.isRefreshing = false } }
 
-        samples = history.append(
+        do {
+            let result = try await chatGPT.fetchUsage()
+            updateProvider(.chatgpt) { $0.cliDetected = result.cliDetected }
+            handleSuccess(
+                result.snapshot, planLabel: result.planLabel,
+                source: result.source
+            )
+        } catch is CancellationError {
+            return
+        } catch let error as UsageAPIError {
+            recordFailure(error, for: .chatgpt)
+        } catch {
+            recordFailure(.cliUnavailable, for: .chatgpt)
+        }
+    }
+
+    private func handleSuccess(
+        _ fresh: UsageSnapshot,
+        planLabel: String?,
+        source: ProviderDataSource
+    ) {
+        let provider = fresh.provider
+        let providerSamples = history.append(
             .from(fresh),
             retention: settings.historyRetention.duration,
             now: fresh.fetchedAt
         )
-        LastUsageCache.save(fresh)
-        recomputeAnalytics()
-        refreshActivity(evaluate: false)
-        evaluateNotifications(apiError: nil, healthy: true)
+        updateProvider(provider) { state in
+            state.consecutiveFailures = 0
+            state.nextRetryAt = nil
+            state.lastError = nil
+            state.snapshot = fresh
+            state.planLabel = planLabel ?? state.planLabel
+            state.lastSuccessAt = fresh.fetchedAt
+            state.isShowingCachedData = false
+            state.samples = providerSamples
+            state.connectionState = .connected
+            state.dataSource = source
+        }
+        LastUsageCache.save(fresh, provider: provider)
+        recomputeAnalytics(for: provider)
+        if provider == .claude { refreshActivity(evaluate: false) }
+        evaluateNotifications(for: provider, apiError: nil, healthy: true)
     }
 
     /// Recomputes the derived analytics once per poll.
@@ -259,38 +334,64 @@ public final class AppModel {
     /// week of samples turned into tens of thousands of floating-point operations per second
     /// while the panel was open. Caching them is the difference between an idle menu bar app
     /// and one that shows up in Activity Monitor.
-    private func recomputeAnalytics() {
-        guard let snapshot else {
-            projections = [:]
-            surgingLimitIDs = []
-            weeklyAveragePerDay = nil
+    private func recomputeAnalytics(for provider: UsageProvider) {
+        let current = state(for: provider)
+        guard let snapshot = current.snapshot else {
+            updateProvider(provider) {
+                $0.projections = [:]
+                $0.surgingLimitIDs = []
+                $0.weeklyAveragePerDay = nil
+            }
             return
         }
         let now = Date()
-        projections = Dictionary(
+        let projections = Dictionary(
             uniqueKeysWithValues: snapshot.limits.map {
-                ($0.id, UsageAnalytics.projection(for: $0, samples: samples, now: now))
+                ($0.id, UsageAnalytics.projection(for: $0, samples: current.samples, now: now))
             }
         )
-        surgingLimitIDs = Set(
+        let surgingLimitIDs = Set(
             snapshot.limits
-                .filter { UsageAnalytics.isSurging(samples, limit: $0) }
+                .filter { UsageAnalytics.isSurging(current.samples, limit: $0) }
                 .map(\.id)
         )
         // Also cached: this one sorts the sample series, and the weekly section would
         // otherwise recompute it on every tick of the popover's clock.
-        weeklyAveragePerDay = snapshot.weeklyLimit.flatMap {
-            UsageAnalytics.averagePerDay(samples, limit: $0, now: now)
+        let weeklyAveragePerDay = snapshot.weeklyLimit.flatMap {
+            UsageAnalytics.averagePerDay(current.samples, limit: $0, now: now)
+        }
+        updateProvider(provider) {
+            $0.projections = projections
+            $0.surgingLimitIDs = surgingLimitIDs
+            $0.weeklyAveragePerDay = weeklyAveragePerDay
         }
     }
 
-    private func recordFailure(_ error: UsageAPIError) {
-        consecutiveFailures += 1
-        lastError = error
-        // Deliberately do NOT clear `snapshot`: showing the last known numbers with an
-        // explicit age beats replacing everything with 0%.
-        if snapshot != nil { isShowingCachedData = true }
-        evaluateNotifications(apiError: error, healthy: false)
+    private func recordFailure(_ error: UsageAPIError, for provider: UsageProvider) {
+        let previous = state(for: provider)
+        let failures = previous.consecutiveFailures + 1
+        let retryAfter: TimeInterval?
+        if case .rateLimited(let after) = error { retryAfter = after } else { retryAfter = nil }
+        let delay = max(
+            backoff.delay(failureCount: failures, retryAfter: retryAfter),
+            TimeInterval(settings.refreshInterval.rawValue)
+        )
+        updateProvider(provider) { state in
+            state.consecutiveFailures = failures
+            state.nextRetryAt = Date().addingTimeInterval(delay)
+            state.lastError = error
+            if state.snapshot != nil { state.isShowingCachedData = true }
+            switch error {
+            case .missingToken, .unauthorized, .forbidden, .codexAuthenticationRequired:
+                state.connectionState = .authenticationRequired
+            case .cliNotFound:
+                state.connectionState = .unavailable
+                state.cliDetected = false
+            default:
+                state.connectionState = .unavailable
+            }
+        }
+        evaluateNotifications(for: provider, apiError: error, healthy: false)
     }
 
     private func maybeFetchProfile(token: String) async {
@@ -300,6 +401,9 @@ public final class AppModel {
         }
         lastProfileFetch = Date()
         profile = try? await api.fetchProfile(token: token)
+        if let profile {
+            updateProvider(.claude) { $0.planLabel = profile.planLabel }
+        }
     }
 
     // MARK: Activity
@@ -315,20 +419,29 @@ public final class AppModel {
         let changed = state != activity
         activity = state
         if changed && evaluate {
-            evaluateNotifications(apiError: lastError, healthy: lastError == nil)
+            let claude = self.state(for: .claude)
+            evaluateNotifications(
+                for: .claude, apiError: claude.lastError, healthy: claude.lastError == nil
+            )
         }
     }
 
     // MARK: Notifications
 
-    private func evaluateNotifications(apiError: UsageAPIError?, healthy: Bool) {
+    private func evaluateNotifications(
+        for provider: UsageProvider,
+        apiError: UsageAPIError?,
+        healthy: Bool
+    ) {
+        let providerState = state(for: provider)
         let context = PolicyContext(
             now: Date(),
             settings: settings,
-            snapshot: snapshot,
-            projections: projections,
-            surgingLimitIDs: surgingLimitIDs,
-            activity: activity,
+            snapshot: providerState.snapshot,
+            provider: provider,
+            projections: providerState.projections,
+            surgingLimitIDs: providerState.surgingLimitIDs,
+            activity: provider == .claude ? activity : nil,
             apiError: apiError,
             apiHealthy: healthy
         )
@@ -364,6 +477,34 @@ public final class AppModel {
         return primaryLimit?.percent
     }
 
+    /// The status item follows the selected popover tab while still choosing that provider's
+    /// configured real limit. Disconnected or stale cached data remains unavailable.
+    var menuBarMetric: MenuBarUsageMetric? {
+        MenuBarMetricPolicy.selected(
+            provider: selectedProvider,
+            states: providerStates,
+            primaryMetric: settings.primaryMetric,
+            now: Date(),
+            refreshInterval: TimeInterval(settings.refreshInterval.rawValue)
+        )
+    }
+
+    var liveProviderCount: Int {
+        let now = Date()
+        let interval = TimeInterval(settings.refreshInterval.rawValue)
+        return UsageProvider.allCases.filter {
+            state(for: $0).hasCurrentData(now: now, refreshInterval: interval)
+        }.count
+    }
+
+    public func providerTightestPercent(_ provider: UsageProvider, now: Date) -> Double? {
+        let state = state(for: provider)
+        guard state.hasCurrentData(
+            now: now, refreshInterval: TimeInterval(settings.refreshInterval.rawValue)
+        ) else { return nil }
+        return state.snapshot?.bottleneck?.percent
+    }
+
     /// A one-character hint shown when the menu-bar number is not the session limit, so
     /// "5h = 25 %, 7d = 91 %" cannot be misread as a comfortable session.
     public var primaryTag: String? {
@@ -380,7 +521,10 @@ public final class AppModel {
 
     /// One line explaining which limit matters most right now.
     public var headline: String {
-        if lastError == .missingToken { return "Not connected" }
+        if lastError == .missingToken || lastError == .codexAuthenticationRequired
+            || lastError == .cliNotFound {
+            return "Not connected"
+        }
         guard let snapshot, let bottleneck = snapshot.bottleneck else {
             return lastError?.title ?? "No usage data"
         }
@@ -416,10 +560,14 @@ public final class AppModel {
     public func updateSettings(_ mutate: (inout AppSettings) -> Void) {
         let before = settingsStore.current
         let after = settingsStore.update(mutate)
+        selectedProvider = after.selectedProvider
 
         if after.historyRetention != before.historyRetention {
             history.applyRetention(after.historyRetention.duration)
-            samples = history.load()
+            for provider in UsageProvider.allCases {
+                updateProvider(provider) { $0.samples = history.load(provider: provider) }
+                recomputeAnalytics(for: provider)
+            }
         }
         if after.refreshInterval != before.refreshInterval {
             startRefreshLoop()
@@ -441,7 +589,20 @@ public final class AppModel {
 
     public func clearHistory() {
         history.clear()
-        samples = []
+        for provider in UsageProvider.allCases {
+            updateProvider(provider) {
+                $0.samples = []
+                $0.projections = [:]
+                $0.surgingLimitIDs = []
+                $0.weeklyAveragePerDay = nil
+            }
+        }
+    }
+
+    public func selectProvider(_ provider: UsageProvider) {
+        guard provider != selectedProvider else { return }
+        _ = settingsStore.update { $0.selectedProvider = provider }
+        selectedProvider = provider
     }
 
     public func saveToken(_ token: String) -> Bool {
@@ -458,15 +619,31 @@ public final class AppModel {
         tokenStore.deleteStoredToken()
         rejectedSources.removeAll()
         tokenStore.invalidateCache()
-        snapshot = nil
         profile = nil
-        lastSuccessAt = nil
-        LastUsageCache.clear()
-        lastError = .missingToken
+        updateProvider(.claude) {
+            $0.snapshot = nil
+            $0.lastSuccessAt = nil
+            $0.lastError = .missingToken
+            $0.isShowingCachedData = false
+            $0.connectionState = .authenticationRequired
+            $0.dataSource = nil
+            $0.planLabel = nil
+            $0.projections = [:]
+            $0.surgingLimitIDs = []
+            $0.weeklyAveragePerDay = nil
+        }
+        LastUsageCache.clear(provider: .claude)
+    }
+
+    public func dashboardURL(for provider: UsageProvider) -> URL {
+        if provider == .claude, let custom = URL(string: settings.dashboardURL) {
+            return custom
+        }
+        return provider.dashboardURL
     }
 
     public func availableTokenSources() -> [TokenSource] {
-        tokenStore.availableSources()
+        previewTokenSources ?? tokenStore.availableSources()
     }
 
     public func refreshNotificationAvailability() {
@@ -491,26 +668,90 @@ public final class AppModel {
     ) -> AppModel {
         let model = AppModel(
             api: DeadAPIClient(),
+            chatGPT: DeadChatGPTService(),
             history: HistoryStore(url: URL(fileURLWithPath: "/dev/null")),
-            settingsStore: SettingsStore(defaults: UserDefaults(suiteName: "preview") ?? .standard)
+            settingsStore: SettingsStore(
+                defaults: UserDefaults(suiteName: "preview-\(UUID().uuidString)") ?? .standard
+            ),
+            previewTokenSources: [.claudeCodeKeychain],
+            loadsPersistentState: false
         )
-        model.snapshot = snapshot
+        model.tokenSource = .claudeCodeKeychain
         model.activity = activity
-        model.samples = samples
-        model.profile = AccountProfile(
-            planLabel: plan, rateLimitTier: nil, subscriptionStatus: nil, extraUsageAvailable: nil
-        )
-        model.lastSuccessAt = now.addingTimeInterval(-12)
-        model.lastError = error
+        if snapshot.provider == .claude {
+            model.profile = AccountProfile(
+                planLabel: plan, rateLimitTier: nil, subscriptionStatus: nil,
+                extraUsageAvailable: nil
+            )
+        }
+        model.updateProvider(snapshot.provider) {
+            $0.snapshot = snapshot
+            $0.samples = samples
+            $0.planLabel = plan
+            $0.lastSuccessAt = now.addingTimeInterval(-12)
+            $0.lastError = error
+            $0.isShowingCachedData = error != nil
+            $0.connectionState = error == nil ? .connected : .unavailable
+            $0.dataSource = snapshot.provider == .claude ? .anthropicOAuth : .codexCLI
+            $0.cliDetected = snapshot.provider == .chatgpt ? true : nil
+        }
         model.tick = now
-        model.recomputeAnalytics()
+        model.selectProvider(snapshot.provider)
+        model.recomputeAnalytics(for: snapshot.provider)
         return model
+    }
+
+    /// Adds or replaces one provider in a preview model without touching persisted data.
+    func previewApply(
+        snapshot: UsageSnapshot,
+        samples: [UsageSample] = [],
+        plan: String? = nil,
+        error: UsageAPIError? = nil,
+        select: Bool = false,
+        now: Date = Date()
+    ) {
+        updateProvider(snapshot.provider) {
+            $0.snapshot = snapshot
+            $0.samples = samples
+            $0.planLabel = plan
+            $0.lastSuccessAt = now.addingTimeInterval(-12)
+            $0.lastError = error
+            $0.isShowingCachedData = error != nil
+            $0.connectionState = error == nil ? .connected : .unavailable
+            $0.dataSource = snapshot.provider == .claude ? .anthropicOAuth : .codexCLI
+            $0.cliDetected = snapshot.provider == .chatgpt ? true : nil
+        }
+        if select { selectProvider(snapshot.provider) }
+        recomputeAnalytics(for: snapshot.provider)
     }
 
     /// Preview-only: puts the panel into an error state after construction.
     func previewApply(error: UsageAPIError) {
-        lastError = error
-        isShowingCachedData = true
+        updateProvider(selectedProvider) {
+            $0.lastError = error
+            $0.isShowingCachedData = true
+            $0.connectionState = .unavailable
+        }
+    }
+
+    /// Preview-only disconnected state for a provider that has no cached snapshot.
+    func previewApply(
+        provider: UsageProvider,
+        error: UsageAPIError,
+        cliDetected: Bool? = nil,
+        select: Bool = true
+    ) {
+        updateProvider(provider) {
+            $0.snapshot = nil
+            $0.lastSuccessAt = nil
+            $0.lastError = error
+            $0.isShowingCachedData = false
+            $0.connectionState = error == .codexAuthenticationRequired
+                ? .authenticationRequired : .unavailable
+            $0.cliDetected = cliDetected
+            $0.dataSource = nil
+        }
+        if select { selectProvider(provider) }
     }
 
     /// Never called during a preview render; exists so `preview` cannot hit the network.
@@ -519,65 +760,36 @@ public final class AppModel {
         func fetchProfile(token: String) async throws -> AccountProfile { throw UsageAPIError.offline }
     }
 
+    private struct DeadChatGPTService: ChatGPTUsageServiceProtocol {
+        func fetchUsage() async throws -> ChatGPTUsageResult { throw UsageAPIError.offline }
+        func isCLIDetected() -> Bool { false }
+    }
+
     /// Sanitized debug text. Contains the response body only — never the token, and with the
     /// workspace/organization identifiers stripped.
     public func debugExport() -> String {
         var lines: [String] = []
-        lines.append("Claude Usage Tracker — debug export")
+        lines.append("Claude Usage Tracker - debug export")
         lines.append("generated: \(ISO8601.string(from: Date()))")
-        lines.append("token source: \(tokenSource?.label ?? "none") (value not included)")
-        lines.append("last success: \(lastSuccessAt.map(ISO8601.string(from:)) ?? "never")")
-        lines.append("consecutive failures: \(consecutiveFailures)")
-        lines.append("last error: \(lastError.map { "\($0.title) — \($0.detail)" } ?? "none")")
-        lines.append("samples retained: \(samples.count)")
+        lines.append("Claude credential source: \(tokenSource?.label ?? "none") (value not included)")
         lines.append("activity: hook \(activity.hookInstalled ? "installed" : "not installed"), \(activity.sessions.count) session(s)")
-        if let snapshot {
-            lines.append("schema warnings: \(snapshot.schemaWarnings.isEmpty ? "none" : snapshot.schemaWarnings.joined(separator: "; "))")
+        for provider in UsageProvider.allCases {
+            let state = state(for: provider)
             lines.append("")
-            lines.append("--- usage payload (sanitized) ---")
-            lines.append(sanitizedPayload(snapshot.raw))
+            lines.append("--- \(provider.displayName) ---")
+            lines.append("connection: \(state.connectionState.rawValue)")
+            lines.append("data source: \(state.dataSource?.label ?? "none")")
+            lines.append("last success: \(state.lastSuccessAt.map(ISO8601.string(from:)) ?? "never")")
+            lines.append("cached: \(state.isShowingCachedData ? "yes" : "no")")
+            lines.append("consecutive failures: \(state.consecutiveFailures)")
+            lines.append("last error: \(state.lastError?.title(for: provider) ?? "none")")
+            lines.append("samples retained: \(state.samples.count)")
+            if let snapshot = state.snapshot {
+                lines.append("schema warnings: \(snapshot.schemaWarnings.isEmpty ? "none" : snapshot.schemaWarnings.joined(separator: "; "))")
+                lines.append("usage payload (sanitized):")
+                lines.append(DebugSanitizer.encoded(snapshot.raw))
+            }
         }
         return lines.joined(separator: "\n")
     }
-
-    private func sanitizedPayload(_ raw: JSONValue?) -> String {
-        guard let raw else { return "(not retained)" }
-        let scrubbed = scrub(raw)
-        guard let data = try? JSONEncoder.pretty.encode(scrubbed),
-              let text = String(data: data, encoding: .utf8)
-        else { return "(could not encode)" }
-        return text
-    }
-
-    /// Redacts anything that could identify the account. Keys are matched, not values, so a
-    /// new identifier field is caught by name rather than by guesswork.
-    private func scrub(_ value: JSONValue) -> JSONValue {
-        switch value {
-        case .object(let dict):
-            var out: [String: JSONValue] = [:]
-            for (key, child) in dict {
-                let lower = key.lowercased()
-                if lower.contains("token") || lower.contains("uuid") || lower.contains("email")
-                    || lower.contains("secret") || lower == "id" || lower.hasSuffix("_id")
-                    || lower.contains("organization") || lower.contains("workspace") {
-                    out[key] = .string("<redacted>")
-                } else {
-                    out[key] = scrub(child)
-                }
-            }
-            return .object(out)
-        case .array(let items):
-            return .array(items.map(scrub))
-        default:
-            return value
-        }
-    }
-}
-
-extension JSONEncoder {
-    static let pretty: JSONEncoder = {
-        let e = JSONEncoder()
-        e.outputFormatting = [.prettyPrinted, .sortedKeys]
-        return e
-    }()
 }

@@ -100,6 +100,8 @@ public struct AppSettings: Sendable, Codable, Equatable {
     public var refreshInterval: RefreshInterval = .twoMinutes
     public var launchAtLogin: Bool = false
     public var dashboardURL: String = "https://claude-usage-tracker-xi.vercel.app"
+    /// Persisted provider tab. Missing in older settings blobs, which therefore remain Claude.
+    public var selectedProvider: UsageProvider = .claude
 
     // Menu bar
     public var displayMode: MenuBarDisplayMode = .iconAndPercent
@@ -156,12 +158,13 @@ public struct AppSettings: Sendable, Codable, Equatable {
         let d = AppSettings()
 
         func value<T: Decodable>(_ key: CodingKeys, _ fallback: T) -> T {
-            (try? c.decodeIfPresent(T.self, forKey: key)) as? T ?? fallback
+            (try? c.decodeIfPresent(T.self, forKey: key)) ?? fallback
         }
 
         refreshInterval = value(.refreshInterval, d.refreshInterval)
         launchAtLogin = value(.launchAtLogin, d.launchAtLogin)
         dashboardURL = value(.dashboardURL, d.dashboardURL)
+        selectedProvider = value(.selectedProvider, d.selectedProvider)
         displayMode = value(.displayMode, d.displayMode)
         primaryMetric = value(.primaryMetric, d.primaryMetric)
         tintIconOnAlert = value(.tintIconOnAlert, d.tintIconOnAlert)

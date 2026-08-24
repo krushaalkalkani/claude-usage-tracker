@@ -19,12 +19,13 @@ struct SettingsView: View {
     private var pane: Pane { selected ?? startPane }
 
     enum Pane: String, CaseIterable, Identifiable {
-        case general, menuBar, notifications, history, privacy
+        case general, providers, menuBar, notifications, history, privacy
         var id: String { rawValue }
 
         var title: String {
             switch self {
             case .general: return "General"
+            case .providers: return "Providers"
             case .menuBar: return "Menu Bar"
             case .notifications: return "Notifications"
             case .history: return "History & Data"
@@ -35,6 +36,7 @@ struct SettingsView: View {
         var symbol: String {
             switch self {
             case .general: return "gearshape"
+            case .providers: return "point.3.connected.trianglepath.dotted"
             case .menuBar: return "menubar.rectangle"
             case .notifications: return "bell"
             case .history: return "chart.xyaxis.line"
@@ -110,6 +112,7 @@ struct SettingsView: View {
 
             switch pane {
             case .general: GeneralPane(model: model)
+            case .providers: ProvidersPane(model: model)
             case .menuBar: MenuBarPane(model: model)
             case .notifications: NotificationPane(model: model)
             case .history: HistoryPane(model: model)
@@ -123,8 +126,6 @@ struct SettingsView: View {
 
 private struct GeneralPane: View {
     @Bindable var model: AppModel
-    @State private var token = ""
-    @State private var saveResult: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -145,7 +146,7 @@ private struct GeneralPane: View {
                         .toggleStyle(.switch)
                 }
                 RowRule()
-                SettingsRow(title: "Dashboard URL") {
+                SettingsRow(title: "Claude dashboard URL") {
                     TextField("", text: model.setting(\.dashboardURL))
                         .textFieldStyle(.roundedBorder)
                         .font(DS.label(11))
@@ -153,19 +154,42 @@ private struct GeneralPane: View {
                 }
             }
 
+        }
+    }
+
+    private var launchSubtitle: String? {
+        if !LaunchAtLogin.isAvailable { return "Available once the app is in /Applications." }
+        if model.launchAtLoginState == .requiresApproval {
+            return "Approve “ClaudeUsage” in System Settings › General › Login Items."
+        }
+        return nil
+    }
+}
+
+// MARK: - Providers
+
+private struct ProvidersPane: View {
+    @Bindable var model: AppModel
+    @State private var token = ""
+    @State private var saveResult: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
             SettingsSection(
-                title: "Authentication",
-                footnote: "The token is never written to disk in plain text, never logged, and never sent anywhere except api.anthropic.com."
+                title: "Claude",
+                footnote: "Claude credentials stay in the login keychain or remain managed by Claude Code."
             ) {
+                SettingsValueRow(title: "Connection", value: claudeConnection)
+                RowRule()
                 SettingsValueRow(title: "Currently using", value: model.tokenSourceLabel)
                 RowRule()
-                SettingsValueRow(title: "Detected on this Mac", value: detectedSources)
+                SettingsValueRow(title: "Detected on this Mac", value: detectedClaudeSources)
                 RowRule()
                 SettingsRow(title: "Replace token", subtitle: "Stored in your login keychain.") {
                     SecureField("", text: $token)
                         .textFieldStyle(.roundedBorder)
                         .font(DS.label(11))
-                        .frame(width: 200)
+                        .frame(width: 190)
                 }
                 RowRule()
                 HStack(spacing: 8) {
@@ -176,7 +200,7 @@ private struct GeneralPane: View {
                     .disabled(token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     Button("Remove stored token") {
                         model.disconnect()
-                        saveResult = "Removed. Falling back to Claude Code credentials if present."
+                        saveResult = "Removed. Claude Code credentials will still be detected."
                     }
                     Spacer(minLength: 4)
                     if let saveResult {
@@ -189,20 +213,65 @@ private struct GeneralPane: View {
                 .padding(.horizontal, 11)
                 .padding(.vertical, 8)
             }
+
+            SettingsSection(
+                title: "ChatGPT",
+                footnote: "ChatGPT - Codex/agentic usage. This is not a universal meter for every ordinary ChatGPT conversation."
+            ) {
+                SettingsValueRow(title: "Codex CLI", value: chatGPTCLI)
+                RowRule()
+                SettingsValueRow(title: "Connection", value: chatGPTConnection)
+                RowRule()
+                SettingsValueRow(title: "Data source", value: chatGPTSource)
+                RowRule()
+                HStack(spacing: 8) {
+                    Button("Setup instructions") {
+                        if let url = URL(string: "https://developers.openai.com/codex/auth/") {
+                            NSWorkspace.shared.open(url)
+                        }
+                    }
+                    Button("Check again") { model.refreshNow() }
+                    Spacer()
+                }
+                .controlSize(.small)
+                .padding(.horizontal, 11)
+                .padding(.vertical, 8)
+            }
         }
     }
 
-    private var launchSubtitle: String? {
-        if !LaunchAtLogin.isAvailable { return "Available once the app is in /Applications." }
-        if model.launchAtLoginState == .requiresApproval {
-            return "Approve “ClaudeUsage” in System Settings › General › Login Items."
-        }
-        return nil
+    private var claudeConnection: String {
+        connectionLabel(model.state(for: .claude).connectionState)
     }
 
-    private var detectedSources: String {
+    private var detectedClaudeSources: String {
         let sources = model.availableTokenSources()
         return sources.isEmpty ? "None" : sources.map(\.label).joined(separator: ", ")
+    }
+
+    private var chatGPTCLI: String {
+        switch model.state(for: .chatgpt).cliDetected {
+        case .some(true): return "Detected"
+        case .some(false): return "Not detected"
+        case nil: return "Checking"
+        }
+    }
+
+    private var chatGPTConnection: String {
+        connectionLabel(model.state(for: .chatgpt).connectionState)
+    }
+
+    private var chatGPTSource: String {
+        model.state(for: .chatgpt).dataSource?.label ?? "Not available"
+    }
+
+    private func connectionLabel(_ state: ProviderConnectionState) -> String {
+        switch state {
+        case .connected: return "Connected"
+        case .authenticationRequired: return "Authentication required"
+        case .unavailable: return "Unavailable"
+        case .unknown: return "Checking"
+        }
     }
 }
 
@@ -443,7 +512,10 @@ private struct HistoryPane: View {
                     .frame(width: 130)
                 }
                 RowRule()
-                SettingsValueRow(title: "Samples retained", value: "\(model.samples.count)")
+                SettingsValueRow(
+                    title: "Samples retained",
+                    value: "Claude \(model.state(for: .claude).samples.count) · ChatGPT \(model.state(for: .chatgpt).samples.count)"
+                )
                 RowRule()
                 HStack(spacing: 8) {
                     Button("Clear local history") {
@@ -506,7 +578,7 @@ private struct HistoryPane: View {
 
             SettingsSection(
                 title: "Debug",
-                footnote: "The report contains the usage response with account identifiers redacted. It never contains your token."
+                footnote: "The report redacts credentials, account identifiers, emails, prompts, responses, and session content."
             ) {
                 SettingsRow(title: "Show schema notes in the panel") {
                     Toggle("", isOn: model.setting(\.debugMode)).toggleStyle(.switch)
@@ -539,11 +611,17 @@ private struct PrivacyPane: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             SettingsSection(title: "What leaves this Mac") {
-                paragraph("Exactly one thing: an HTTPS request to api.anthropic.com carrying your OAuth token, every \(model.settings.refreshInterval.label.lowercased()). There is no analytics endpoint, no crash reporter, and no server belonging to this project.")
+                paragraph("Claude usage is read from Anthropic. ChatGPT/Codex usage is read through the local Codex CLI; if that read-only method is unavailable, an isolated request may be sent directly to ChatGPT using Codex's existing login. There is no telemetry, analytics endpoint, crash reporter, or backend belonging to this project.")
             }
 
-            SettingsSection(title: "Where your token lives") {
-                paragraph("In your login keychain. If you have not added one, the app reads Claude Code's own credentials from the keychain instead — macOS asks your permission the first time. The token is never written to a file, never logged, and never included in the debug report.")
+            SettingsSection(title: "Where credentials live") {
+                paragraph("Claude credentials stay in your login keychain or remain managed by Claude Code. ChatGPT credentials remain managed by Codex. The tracker reads the local Codex OAuth file only for the isolated fallback, never modifies it, and never stores ChatGPT credentials.")
+                RowRule()
+                paragraph("Credentials, account IDs, emails, prompts, responses, and session content are never logged or included in the copied debug report.")
+            }
+
+            SettingsSection(title: "What ChatGPT usage means") {
+                paragraph("OpenAI numbers in this app are ChatGPT - Codex/agentic allowance. OpenAI exposes separate allowances for models and features, so this is not a meter for every ordinary ChatGPT conversation.")
             }
 
             SettingsSection(title: "Stored locally") {
@@ -581,7 +659,7 @@ private struct PrivacyPane: View {
             SettingsSection(title: "The Claude Code hook") {
                 paragraph("Records: session id, working directory, project folder name, event name, tool name, permission mode, effort level, agent type, and counters.")
                 RowRule()
-                paragraph("Never records: your prompts, Claude's replies, tool arguments, or tool output. There is no setting to enable that — the code to write it does not exist, and the hook test suite asserts as much.")
+                paragraph("Never records: your prompts, Claude's replies, tool arguments, or tool output. There is no setting to enable that - the code to write it does not exist, and the hook test suite asserts as much.")
             }
         }
     }
@@ -589,7 +667,8 @@ private struct PrivacyPane: View {
     private var files: [(String, String)] {
         [
             ("history.json", "usage percentages and timestamps"),
-            ("last-usage.json", "the most recent parsed snapshot"),
+            ("last-usage.json", "the most recent Claude snapshot"),
+            ("last-usage-chatgpt.json", "the most recent ChatGPT snapshot"),
             ("sessions/", "Claude Code session metadata"),
             ("events.jsonl", "the last 200 hook event names"),
             ("notifications.json", "which alerts have already fired"),
