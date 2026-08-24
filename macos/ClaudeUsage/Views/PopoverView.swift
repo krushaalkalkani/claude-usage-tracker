@@ -9,16 +9,18 @@ struct PopoverView: View {
 
     private var now: Date { model.tick }
 
-    /// The one limit that gets the hero treatment — the tightest across every provider.
-    private var hero: LimitWindow? { model.unifiedHero }
+    /// The one limit that gets the hero treatment, within the selected provider's tab.
+    private var hero: LimitWindow? { model.primaryLimit }
 
-    /// Everything else, still ranked tightest-first, regardless of which service it came from.
+    /// Everything else on this tab, ranked tightest-first.
     private var others: [LimitWindow] {
-        model.allLimitsRanked.filter { !model.isSameLimit($0, hero) }
+        guard let snapshot = model.snapshot else { return [] }
+        return snapshot.limits.filter { $0.id != hero?.id }
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            ProviderTabBar(model: model)
             header
             body(for: model.snapshot)
             footer
@@ -35,51 +37,6 @@ struct PopoverView: View {
     }
 
     // MARK: Header
-
-    private var providerSwitcher: some View {
-        HStack(spacing: 4) {
-            ForEach(UsageProvider.allCases) { provider in
-                if provider != UsageProvider.allCases.first {
-                    Text("|")
-                        .font(DS.label(10))
-                        .foregroundStyle(DS.inkFaint.opacity(0.65))
-                }
-                Button {
-                    model.selectProvider(provider)
-                } label: {
-                    HStack(spacing: 4) {
-                        Text(provider.displayName)
-                        Text(providerPercent(provider))
-                            .font(DS.figure(10, weight: .semibold))
-                    }
-                    .font(DS.label(10.5, weight: model.selectedProvider == provider ? .semibold : .medium))
-                    .foregroundStyle(model.selectedProvider == provider ? DS.ink : DS.inkMuted)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 4)
-                    .background(
-                        Capsule()
-                            .fill(model.selectedProvider == provider ? DS.surface : Color.clear)
-                            .overlay(
-                                Capsule().strokeBorder(
-                                    model.selectedProvider == provider ? DS.surfaceStroke : Color.clear,
-                                    lineWidth: 1
-                                )
-                            )
-                    )
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Show \(provider.displayName) usage")
-            }
-            Spacer(minLength: 0)
-        }
-        .panelRow()
-        .padding(.top, 10)
-    }
-
-    private func providerPercent(_ provider: UsageProvider) -> String {
-        guard let percent = model.providerTightestPercent(provider, now: now) else { return "—" }
-        return "\(Int(percent.rounded()))%"
-    }
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -108,24 +65,15 @@ struct PopoverView: View {
         .padding(.bottom, 12)
     }
 
-    private var headerTitle: String {
-        let live = model.providersWithData
-        guard live.count == 1, let only = live.first else { return "Usage" }
-        return only.headerTitle
-    }
+    // The tab bar already says which service is showing; the header describes it in full —
+    // its plan, its own allowance caveat, its own freshness.
+    private var headerTitle: String { model.selectedProvider.headerTitle }
 
-    /// The Codex/agentic caveat only belongs here when ChatGPT is the only thing on screen;
-    /// in a mixed list it would look like it applied to the Claude rows too.
-    private var headerSubtitle: String? {
-        let live = model.providersWithData
-        guard live.count == 1, let only = live.first else { return nil }
-        return only.allowanceDescription
-    }
+    private var headerSubtitle: String? { model.selectedProvider.allowanceDescription }
 
     private var statusLine: String {
         var parts: [String] = []
-        // With both providers listed, one plan label would be ambiguous.
-        if model.providersWithData.count == 1, let plan = model.planLabel { parts.append(plan) }
+        if let plan = model.planLabel { parts.append(plan) }
         if model.isRefreshing {
             parts.append("refreshing")
         } else if let last = model.lastSuccessAt {
@@ -135,33 +83,32 @@ struct PopoverView: View {
     }
 
     private var headerStatusColor: Color {
-        if model.providersWithData.isEmpty { return DS.inkFaint }
-        if !model.providerErrors.isEmpty { return DS.tight }
-        // Worst severity across everything tracked, not just the formerly-selected provider.
-        let worst = model.allLimitsRanked.map(\.severity).max() ?? .normal
-        return DS.accent(worst)
+        if model.snapshot == nil { return DS.inkFaint }
+        if model.lastError != nil { return DS.tight }
+        return DS.accent(model.providerSeverity(model.selectedProvider))
     }
 
     // MARK: Body
 
     @ViewBuilder
     private func body(for snapshot: UsageSnapshot?) -> some View {
-        if model.providersWithData.isEmpty && shouldShowConnectPrompt {
-            // Nothing anywhere: offer the provider that is closest to being usable.
-            if model.state(for: .claude).snapshot == nil && model.lastError == .missingToken {
+        if snapshot == nil && shouldShowConnectPrompt {
+            // Each tab offers its own connect flow — switching to ChatGPT with Claude already
+            // connected should not fall through to Claude's prompt or an empty state.
+            if model.selectedProvider == .claude {
                 ClaudeConnectPrompt(model: model).padding(.bottom, 14)
             } else {
                 ChatGPTConnectPrompt(model: model).padding(.bottom, 14)
             }
         } else if let snapshot {
             VStack(alignment: .leading, spacing: DS.Space.l) {
-                // One banner per failing provider: a dead Codex token must not hide a Claude
-                // problem, and neither should silence the other's data.
-                ForEach(model.providerErrors, id: \.0) { provider, error in
+                // Each tab shows its own error only — a dead Codex token has no bearing on
+                // the Claude tab and should not appear there.
+                if let error = model.lastError {
                     ErrorBanner(
                         error: error,
-                        provider: provider,
-                        isShowingCached: model.state(for: provider).snapshot != nil
+                        provider: model.selectedProvider,
+                        isShowingCached: model.snapshot != nil
                     )
                     .panelRow()
                 }
@@ -170,8 +117,7 @@ struct PopoverView: View {
                     HeroLimitView(
                         limit: hero,
                         projection: model.projection(for: hero),
-                        isTightest: model.allLimitsRanked.count > 1,
-                        showsProvider: model.providersWithData.count > 1,
+                        isTightest: snapshot.limits.count > 1,
                         pace: UsageAnalytics.pace(for: hero, now: now),
                         now: now
                     )
@@ -190,16 +136,12 @@ struct PopoverView: View {
                 if !others.isEmpty {
                     VStack(alignment: .leading, spacing: 10) {
                         SectionRule()
-                        Eyebrow(
-                            text: "All limits",
-                            detail: model.providersWithData.count > 1 ? "tightest first" : nil
-                        ).panelRow()
+                        Eyebrow(text: "Other limits").panelRow()
                         ForEach(others, id: \.rowKey) { limit in
                             CompactLimitRow(
                                 limit: limit,
                                 projection: model.projection(for: limit),
-                                now: now,
-                                showsProvider: model.providersWithData.count > 1
+                                now: now
                             )
                         }
                     }

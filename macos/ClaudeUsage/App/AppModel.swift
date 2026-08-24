@@ -470,13 +470,6 @@ public final class AppModel {
 
     // MARK: Derived values
 
-    /// The limit whose number goes in the menu bar.
-    // MARK: Unified view
-    //
-    // The panel shows one ranked list across every provider rather than a tab per provider:
-    // what matters is the limit closest to its ceiling, and which service it belongs to is a
-    // property of that limit, not a mode the user has to switch into.
-
     /// Projects Claude Code is actively working in right now.
     ///
     /// Captured at sample time because session files are ephemeral — they are deleted when
@@ -503,49 +496,14 @@ public final class AppModel {
 
     /// Analytics for a limit, read from **its own** provider's state.
     ///
-    /// Limit ids are only unique within a provider — `weekly_all` exists on both — so a
-    /// unified list must never look a projection up by bare id against whichever provider
-    /// happens to be selected, or Claude's weekly would be described by ChatGPT's burn rate.
+    /// Limit ids are only unique *within* a provider — `weekly_all` exists on both Claude and
+    /// ChatGPT — so this must never be looked up by bare id against whichever provider happens
+    /// to be selected, or one tab's window could end up described by the other's burn rate.
     public func projection(for limit: LimitWindow) -> UsageProjection? {
         state(for: limit.provider).projections[limit.id]
     }
 
-    /// Identity that is unique across providers, for view diffing and filtering.
-    public func isSameLimit(_ a: LimitWindow, _ b: LimitWindow?) -> Bool {
-        guard let b else { return false }
-        return a.id == b.id && a.provider == b.provider
-    }
-
-    /// Every tracked limit from every provider, tightest first.
-    public var allLimitsRanked: [LimitWindow] {
-        UsageProvider.allCases
-            .flatMap { state(for: $0).snapshot?.limits ?? [] }
-            .sorted { a, b in
-                if abs(a.percent - b.percent) >= 0.5 { return a.percent > b.percent }
-                if a.isActive != b.isActive { return a.isActive }
-                return a.id < b.id
-            }
-    }
-
-    /// The single limit the hero block describes — the tightest anywhere, unless the user has
-    /// pinned a specific metric.
-    public var unifiedHero: LimitWindow? {
-        if settings.primaryMetric == .auto { return allLimitsRanked.first }
-        return primaryLimit ?? allLimitsRanked.first
-    }
-
-    /// Providers that are set up and returned data.
-    public var providersWithData: [UsageProvider] {
-        UsageProvider.allCases.filter { state(for: $0).snapshot != nil }
-    }
-
-    /// Providers currently reporting a problem, paired with it.
-    public var providerErrors: [(UsageProvider, UsageAPIError)] {
-        UsageProvider.allCases.compactMap { p in
-            state(for: p).lastError.map { (p, $0) }
-        }
-    }
-
+    /// The limit whose number goes in the menu bar.
     public var primaryLimit: LimitWindow? {
         guard let snapshot else { return nil }
         switch settings.primaryMetric {
@@ -652,6 +610,12 @@ public final class AppModel {
     /// urgency only, not the standing state of the extra-usage balance.
     public var overallSeverity: Severity {
         snapshot?.limitSeverity ?? .normal
+    }
+
+    /// Worst severity for one provider's own limits — used by the tab bar so an unselected
+    /// tab's dot reflects that provider only, not whichever one is currently on screen.
+    public func providerSeverity(_ provider: UsageProvider) -> Severity {
+        state(for: provider).snapshot?.limitSeverity ?? .normal
     }
 
     public var statusLabel: String {

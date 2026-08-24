@@ -18,8 +18,9 @@ struct HeroLimitView: View {
     let limit: LimitWindow
     let projection: UsageProjection?
     let isTightest: Bool
-    /// Name the provider in the eyebrow. Off when only one service is being tracked.
-    var showsProvider: Bool = true
+    /// Off by default for the same reason as the hero: one provider per tab, so the tab
+    /// itself is the label.
+    var showsProvider: Bool = false
     /// Ahead of / behind an even burn for this window. Nil when the window has barely begun.
     var pace: UsagePace?
     let now: Date
@@ -142,9 +143,8 @@ struct CompactLimitRow: View {
     let limit: LimitWindow
     let projection: UsageProjection?
     let now: Date
-    /// Prefixes the row with the provider. On by default: in one ranked list across services,
-    /// "Weekly 49%" is ambiguous without saying whose weekly it is.
-    var showsProvider: Bool = true
+    /// Off by default now that each tab is one provider — the tab itself is the label.
+    var showsProvider: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
