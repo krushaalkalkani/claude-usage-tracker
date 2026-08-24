@@ -55,18 +55,38 @@ public final class TokenStore: @unchecked Sendable {
 
     // MARK: Resolution
 
-    public func resolve(forceRefresh: Bool = false) -> ResolvedToken? {
+    /// - Parameter excluding: sources the server has already rejected this run. Resolution
+    ///   walks past them to the next candidate.
+    ///
+    ///   This matters because "a credential exists" and "a credential works" are different
+    ///   things: Claude Code rotates its stored access token, and the copy on disk can be
+    ///   refused by the server while still advertising a future `expiresAt`. Without the
+    ///   skip list the app locks onto that dead credential and re-sends it forever.
+    public func resolve(
+        forceRefresh: Bool = false,
+        excluding: Set<TokenSource> = []
+    ) -> ResolvedToken? {
         lock.lock()
         defer { lock.unlock() }
 
-        if !forceRefresh, let cached, let cachedAt,
+        // The cache holds a single resolution, so it can only answer the unfiltered question.
+        if excluding.isEmpty, !forceRefresh, let cached, let cachedAt,
            Date().timeIntervalSince(cachedAt) < cacheTTL, !cached.isExpired {
             return cached
         }
 
-        let resolved = readAppKeychain() ?? readClaudeCodeKeychain() ?? readLegacyFile()
-        cached = resolved
-        cachedAt = Date()
+        var resolved: ResolvedToken?
+        for read in [readAppKeychain, readClaudeCodeKeychain, readLegacyFile] {
+            if let candidate = read(), !excluding.contains(candidate.source) {
+                resolved = candidate
+                break
+            }
+        }
+
+        if excluding.isEmpty {
+            cached = resolved
+            cachedAt = Date()
+        }
         return resolved
     }
 

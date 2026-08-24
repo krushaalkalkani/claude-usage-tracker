@@ -17,6 +17,12 @@ public final class AppModel {
     public private(set) var profile: AccountProfile?
     public private(set) var activity: ActivityState = .unavailable
     public private(set) var tokenSource: TokenSource?
+    /// Credential sources the server rejected this run.
+    ///
+    /// In memory only, and cleared by a manual refresh or by saving a token, so
+    /// re-authenticating elsewhere (Claude Code, say) gets another chance without a
+    /// relaunch. Persisting it would mean a fixed credential stayed shunned forever.
+    private var rejectedSources: Set<TokenSource> = []
     public private(set) var notificationAvailability: NotificationService.Availability = .notDetermined
     public private(set) var launchAtLoginState: LaunchAtLogin.State = .unavailable
     public private(set) var selectedProvider: UsageProvider
@@ -203,6 +209,10 @@ public final class AppModel {
                 $0.nextRetryAt = nil
             }
         }
+        // Give every credential another go: hitting Refresh is exactly what someone does
+        // after re-authenticating somewhere else.
+        rejectedSources.removeAll()
+        tokenStore.invalidateCache()
         startRefreshLoop()
     }
 
@@ -224,29 +234,43 @@ public final class AppModel {
         updateProvider(.claude) { $0.isRefreshing = true }
         defer { updateProvider(.claude) { $0.isRefreshing = false } }
 
-        guard let token = tokenStore.resolve() else {
-            tokenSource = nil
-            recordFailure(.missingToken, for: .claude)
-            return
-        }
-        tokenSource = token.source
+        // Walk the credential chain. A source the server refuses is set aside and the next
+        // one is tried straight away — otherwise the same rejected token is re-sent every
+        // couple of minutes while a working credential sits unused behind it in the order.
+        while true {
+            guard let token = tokenStore.resolve(excluding: rejectedSources) else {
+                tokenSource = nil
+                recordFailure(rejectedSources.isEmpty ? .missingToken : .unauthorized,
+                              for: .claude)
+                return
+            }
+            tokenSource = token.source
 
-        if token.isExpired {
-            recordFailure(.unauthorized, for: .claude)
-            return
-        }
+            if token.isExpired {
+                rejectedSources.insert(token.source)
+                tokenStore.invalidateCache()
+                continue
+            }
 
-        do {
-            let fresh = try await api.fetchUsage(token: token.value)
-            handleSuccess(fresh, planLabel: profile?.planLabel, source: .anthropicOAuth)
-            await maybeFetchProfile(token: token.value)
-        } catch is CancellationError {
-            return
-        } catch let error as UsageAPIError {
-            if error == .unauthorized { tokenStore.invalidateCache() }
-            recordFailure(error, for: .claude)
-        } catch {
-            recordFailure(.network(error.localizedDescription), for: .claude)
+            do {
+                let fresh = try await api.fetchUsage(token: token.value)
+                handleSuccess(fresh, planLabel: profile?.planLabel, source: .anthropicOAuth)
+                await maybeFetchProfile(token: token.value)
+                return
+            } catch is CancellationError {
+                return
+            } catch let error as UsageAPIError {
+                if error == .unauthorized || error == .forbidden {
+                    rejectedSources.insert(token.source)
+                    tokenStore.invalidateCache()
+                    continue
+                }
+                recordFailure(error, for: .claude)
+                return
+            } catch {
+                recordFailure(.network(error.localizedDescription), for: .claude)
+                return
+            }
         }
     }
 
@@ -584,6 +608,7 @@ public final class AppModel {
     public func saveToken(_ token: String) -> Bool {
         let ok = tokenStore.save(token: token)
         if ok {
+            rejectedSources.removeAll()
             tokenStore.invalidateCache()
             refreshNow()
         }
@@ -592,6 +617,7 @@ public final class AppModel {
 
     public func disconnect() {
         tokenStore.deleteStoredToken()
+        rejectedSources.removeAll()
         tokenStore.invalidateCache()
         profile = nil
         updateProvider(.claude) {

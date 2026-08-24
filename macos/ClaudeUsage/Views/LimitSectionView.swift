@@ -1,6 +1,14 @@
 import SwiftUI
 import ClaudeUsageCore
 
+/// "3d 6h left", or "reset due" once the instant has passed — which happens whenever the panel
+/// is showing cached values from before the window rolled over. "0s left" implied a live
+/// countdown that had merely reached zero.
+private func resetLabel(_ resetsAt: Date, now: Date) -> String {
+    let remaining = resetsAt.timeIntervalSince(now)
+    return remaining > 0 ? "\(Format.duration(remaining)) left" : "reset due"
+}
+
 /// The hero. One limit gets this treatment — whichever is closest to its ceiling — and
 /// everything else is a quiet two-line row.
 ///
@@ -51,7 +59,7 @@ struct HeroLimitView: View {
                 Spacer(minLength: DS.Space.s)
 
                 if let resetsAt = limit.resetsAt {
-                    Text("\(Format.duration(max(0, resetsAt.timeIntervalSince(now)))) left")
+                    Text(resetLabel(resetsAt, now: now))
                         .font(DS.figure(10.5))
                         .foregroundStyle(DS.inkMuted)
                 }
@@ -170,7 +178,7 @@ struct CompactLimitRow: View {
     private var detail: String? {
         var parts: [String] = []
         if let resetsAt = limit.resetsAt {
-            parts.append("\(Format.duration(max(0, resetsAt.timeIntervalSince(now)))) left")
+            parts.append(resetLabel(resetsAt, now: now))
         }
         if let projection, let rate = projection.burnRate, rate.isMeaningful {
             if projection.willExhaustBeforeReset, let eta = projection.timeToExhaustion {
