@@ -29,6 +29,13 @@ public final class AppModel {
     /// Ticks once a second only while the popover is open, so countdowns move without the
     /// whole app re-rendering all day.
     public private(set) var tick: Date = Date()
+    /// Forces the icon back into the menu bar for a grace period after launch or a reopen.
+    ///
+    /// Without this, "hide when healthy" is a trap: the icon is the only way into Settings,
+    /// so once hidden there would be no way to turn the setting off again. Re-running the app
+    /// (`open -a ClaudeUsage`, or double-clicking it) sends a reopen event and brings it back.
+    public private(set) var isTemporarilyRevealed = true
+    private var revealTask: Task<Void, Never>?
     public var isPopoverOpen: Bool = false {
         didSet { popoverVisibilityChanged() }
     }
@@ -126,6 +133,7 @@ public final class AppModel {
     // MARK: Lifecycle
 
     public func start() {
+        revealMenuBarTemporarily()
         refreshActivity()
         startActivityWatcher()
         startRefreshLoop()
@@ -140,6 +148,8 @@ public final class AppModel {
         refreshTask = nil
         tickTask?.cancel()
         tickTask = nil
+        revealTask?.cancel()
+        revealTask = nil
         activityWatcher?.stop()
         activityWatcher = nil
         history.flush()
@@ -305,7 +315,7 @@ public final class AppModel {
     ) {
         let provider = fresh.provider
         let providerSamples = history.append(
-            .from(fresh),
+            .from(fresh, activeProjects: busyProjectNames()),
             retention: settings.historyRetention.duration,
             now: fresh.fetchedAt
         )
@@ -461,6 +471,81 @@ public final class AppModel {
     // MARK: Derived values
 
     /// The limit whose number goes in the menu bar.
+    // MARK: Unified view
+    //
+    // The panel shows one ranked list across every provider rather than a tab per provider:
+    // what matters is the limit closest to its ceiling, and which service it belongs to is a
+    // property of that limit, not a mode the user has to switch into.
+
+    /// Projects Claude Code is actively working in right now.
+    ///
+    /// Captured at sample time because session files are ephemeral — they are deleted when
+    /// the session ends or its process dies, so there is no way to ask later.
+    private func busyProjectNames() -> [String] {
+        let staleAfter = settings.activityStaleSeconds
+        let now = Date()
+        return Array(Set(
+            activity.sessions
+                .filter { $0.resolvedStatus(now: now, staleAfter: staleAfter).isBusy }
+                .map(\.displayName)
+        )).sorted()
+    }
+
+    /// Consumption split across the projects that were running, for the hero's limit.
+    public func attribution(for limit: LimitWindow, since: Date) -> UsageAttribution.Breakdown {
+        UsageAttribution.attribute(
+            samples: state(for: limit.provider).samples,
+            limitID: limit.id,
+            provider: limit.provider,
+            since: since
+        )
+    }
+
+    /// Analytics for a limit, read from **its own** provider's state.
+    ///
+    /// Limit ids are only unique within a provider — `weekly_all` exists on both — so a
+    /// unified list must never look a projection up by bare id against whichever provider
+    /// happens to be selected, or Claude's weekly would be described by ChatGPT's burn rate.
+    public func projection(for limit: LimitWindow) -> UsageProjection? {
+        state(for: limit.provider).projections[limit.id]
+    }
+
+    /// Identity that is unique across providers, for view diffing and filtering.
+    public func isSameLimit(_ a: LimitWindow, _ b: LimitWindow?) -> Bool {
+        guard let b else { return false }
+        return a.id == b.id && a.provider == b.provider
+    }
+
+    /// Every tracked limit from every provider, tightest first.
+    public var allLimitsRanked: [LimitWindow] {
+        UsageProvider.allCases
+            .flatMap { state(for: $0).snapshot?.limits ?? [] }
+            .sorted { a, b in
+                if abs(a.percent - b.percent) >= 0.5 { return a.percent > b.percent }
+                if a.isActive != b.isActive { return a.isActive }
+                return a.id < b.id
+            }
+    }
+
+    /// The single limit the hero block describes — the tightest anywhere, unless the user has
+    /// pinned a specific metric.
+    public var unifiedHero: LimitWindow? {
+        if settings.primaryMetric == .auto { return allLimitsRanked.first }
+        return primaryLimit ?? allLimitsRanked.first
+    }
+
+    /// Providers that are set up and returned data.
+    public var providersWithData: [UsageProvider] {
+        UsageProvider.allCases.filter { state(for: $0).snapshot != nil }
+    }
+
+    /// Providers currently reporting a problem, paired with it.
+    public var providerErrors: [(UsageProvider, UsageAPIError)] {
+        UsageProvider.allCases.compactMap { p in
+            state(for: p).lastError.map { (p, $0) }
+        }
+    }
+
     public var primaryLimit: LimitWindow? {
         guard let snapshot else { return nil }
         switch settings.primaryMetric {
@@ -487,6 +572,35 @@ public final class AppModel {
             now: Date(),
             refreshInterval: TimeInterval(settings.refreshInterval.rawValue)
         )
+    }
+
+    /// Whether the status item should be in the menu bar at all.
+    ///
+    /// Anything that needs the user overrides the setting: an error, a Claude Code prompt, or
+    /// a limit at or above the threshold. Hiding is only ever for the quiet case.
+    var shouldAppearInMenuBar: Bool {
+        guard settings.hideWhenHealthy else { return true }
+        if isTemporarilyRevealed { return true }
+        if !activity.attentionSessions.isEmpty { return true }
+        let now = Date()
+        if UsageProvider.allCases.contains(where: { state(for: $0).lastError != nil }) { return true }
+        let worst = UsageProvider.allCases
+            .compactMap { providerTightestPercent($0, now: now) }
+            .max()
+        // No data is not the same as healthy — stay visible rather than vanish silently.
+        guard let worst else { return true }
+        return worst >= settings.hideBelowPercent
+    }
+
+    /// Brings the icon back for `seconds`, so Settings stays reachable while hidden.
+    public func revealMenuBarTemporarily(seconds: TimeInterval = 20) {
+        isTemporarilyRevealed = true
+        revealTask?.cancel()
+        revealTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(seconds))
+            guard !Task.isCancelled else { return }
+            await MainActor.run { self?.isTemporarilyRevealed = false }
+        }
     }
 
     var liveProviderCount: Int {

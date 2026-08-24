@@ -10,20 +10,31 @@ public struct UsageSample: Sendable, Codable, Equatable {
     public let limits: [String: Double]
     /// Spend percent, when the account exposes spend.
     public let spend: Double?
+    /// Claude Code projects that were working when this sample was taken.
+    ///
+    /// Recorded at sample time rather than reconstructed later: the hook's own state is
+    /// ephemeral (session files vanish when the process dies), so the only reliable record of
+    /// "who was busy at 14:32" is the one written at 14:32.
+    public let activeProjects: [String]
 
     public init(
         t: Date,
         limits: [String: Double],
         spend: Double? = nil,
-        provider: UsageProvider = .claude
+        provider: UsageProvider = .claude,
+        activeProjects: [String] = []
     ) {
         self.provider = provider
         self.t = t
         self.limits = limits
         self.spend = spend
+        self.activeProjects = activeProjects
     }
 
-    public static func from(_ snapshot: UsageSnapshot) -> UsageSample {
+    public static func from(
+        _ snapshot: UsageSnapshot,
+        activeProjects: [String] = []
+    ) -> UsageSample {
         UsageSample(
             t: snapshot.fetchedAt,
             limits: Dictionary(
@@ -31,11 +42,14 @@ public struct UsageSample: Sendable, Codable, Equatable {
                 uniquingKeysWith: { a, _ in a }
             ),
             spend: snapshot.spend?.percent,
-            provider: snapshot.provider
+            provider: snapshot.provider,
+            activeProjects: activeProjects
         )
     }
 
-    private enum CodingKeys: String, CodingKey { case provider, t, limits, spend }
+    private enum CodingKeys: String, CodingKey {
+        case provider, t, limits, spend, activeProjects
+    }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -43,6 +57,8 @@ public struct UsageSample: Sendable, Codable, Equatable {
         t = try c.decode(Date.self, forKey: .t)
         limits = try c.decodeIfPresent([String: Double].self, forKey: .limits) ?? [:]
         spend = try c.decodeIfPresent(Double.self, forKey: .spend)
+        // Absent on samples written before attribution existed.
+        activeProjects = try c.decodeIfPresent([String].self, forKey: .activeProjects) ?? []
     }
 }
 
@@ -244,7 +260,7 @@ public enum UsageAnalytics {
 
     /// The instant the current quota window opened, derived from its reset time and the
     /// window length implied by `group`. Returns nil for windows of unknown length.
-    static func windowStart(for limit: LimitWindow) -> Date? {
+    public static func windowStart(for limit: LimitWindow) -> Date? {
         guard let resetsAt = limit.resetsAt, let length = windowLength(for: limit) else {
             return nil
         }
@@ -335,5 +351,144 @@ public enum UsageAnalytics {
             changedAt = series[i - 1].0
         }
         return max(0, now.timeIntervalSince(changedAt))
+    }
+}
+
+// MARK: - Pace
+
+/// Whether consumption is ahead of or behind an even burn for the window.
+///
+/// "62% used" means nothing without knowing how far into the week you are. Spending 62% by
+/// Wednesday is trouble; by Sunday it is fine. Pace answers that in one number.
+public struct UsagePace: Sendable, Equatable {
+    /// 0...1 of the window elapsed.
+    public let windowElapsed: Double
+    /// Percentage points actually used.
+    public let used: Double
+    /// Percentage points an even burn would have used by now.
+    public let expected: Double
+    /// used − expected. Positive means burning faster than even.
+    public var delta: Double { used - expected }
+
+    /// Ahead/behind expressed against the even-burn line, e.g. 1.4 = 40% faster than even.
+    public var ratio: Double? {
+        guard expected > 0.5 else { return nil }
+        return used / expected
+    }
+
+    /// Small deviations are noise, not signal.
+    public var isOnPace: Bool { abs(delta) < 5 }
+
+    public var summary: String {
+        if isOnPace { return "On pace" }
+        let word = delta > 0 ? "ahead of" : "behind"
+        return "\(Int(abs(delta).rounded()))% \(word) an even burn"
+    }
+}
+
+extension UsageAnalytics {
+    /// Pace for a limit, from the window's own length. Returns nil when the window length is
+    /// unknown or the window has barely started, where the figure would be meaningless.
+    public static func pace(for limit: LimitWindow, now: Date) -> UsagePace? {
+        guard let resetsAt = limit.resetsAt, let length = windowLength(for: limit), length > 0
+        else { return nil }
+
+        let remaining = resetsAt.timeIntervalSince(now)
+        let elapsed = (length - remaining) / length
+        // The first few percent of a window cannot support a pace claim: one early request
+        // reads as "1000% ahead".
+        guard elapsed > 0.05, elapsed <= 1 else { return nil }
+
+        return UsagePace(
+            windowElapsed: elapsed,
+            used: limit.percent,
+            expected: elapsed * 100
+        )
+    }
+}
+
+// MARK: - Go / no-go
+
+/// Whether there is room to start a piece of work of a given size.
+public struct RunwayVerdict: Sendable, Equatable {
+    public enum Call: String, Sendable {
+        /// Comfortably enough quota.
+        case go
+        /// Enough, but not much spare.
+        case tight
+        /// Would run out partway through.
+        case stop
+        /// No burn-rate estimate yet, so no honest answer.
+        case unknown
+    }
+
+    public let call: Call
+    /// Percentage points estimated for the task.
+    public let estimatedCost: Double
+    /// Percentage points available before the ceiling.
+    public let headroom: Double
+    public let detail: String
+}
+
+extension UsageAnalytics {
+    /// Estimates whether a task of `minutes` can finish before the limit is reached.
+    ///
+    /// Deliberately conservative and deliberately refuses to answer without evidence: the
+    /// whole point is to avoid starting an hour of agent work that dies at minute forty.
+    public static func verdict(
+        for limit: LimitWindow,
+        taskMinutes: Double,
+        samples: [UsageSample],
+        now: Date
+    ) -> RunwayVerdict {
+        let headroom = max(0, 100 - limit.percent)
+        guard taskMinutes > 0 else {
+            return RunwayVerdict(call: .unknown, estimatedCost: 0, headroom: headroom,
+                                 detail: "No task length given")
+        }
+
+        guard let rate = burnRate(
+            samples,
+            limitID: limit.id,
+            provider: limit.provider,
+            windowStart: windowStart(for: limit),
+            requiredSpan: requiredSpan(for: limit)
+        ), rate.isMeaningful else {
+            return RunwayVerdict(
+                call: .unknown, estimatedCost: 0, headroom: headroom,
+                detail: "Not enough history to estimate"
+            )
+        }
+
+        let cost = rate.perHour * (taskMinutes / 60)
+        // A reset partway through the task effectively refills the tank, so a task that
+        // outlasts the window is judged only on the part before the reset.
+        let untilReset = limit.timeUntilReset(now: now)
+        let effectiveCost: Double = {
+            guard let untilReset, untilReset < taskMinutes * 60 else { return cost }
+            return rate.perHour * (untilReset / 3600)
+        }()
+
+        let call: RunwayVerdict.Call
+        if effectiveCost > headroom { call = .stop }
+        else if effectiveCost > headroom * 0.7 { call = .tight }
+        else { call = .go }
+
+        let detail: String
+        switch call {
+        case .stop:
+            let affordable = rate.perHour > 0 ? headroom / rate.perHour * 60 : 0
+            detail = "Only about \(Int(affordable.rounded()))m of runway at \(Format.rate(rate.perHour))"
+        case .tight:
+            detail = "Needs ~\(Int(effectiveCost.rounded()))% of the \(Int(headroom.rounded()))% left"
+        case .go:
+            detail = "Needs ~\(Int(effectiveCost.rounded()))% of the \(Int(headroom.rounded()))% left"
+        case .unknown:
+            detail = ""
+        }
+
+        return RunwayVerdict(
+            call: call, estimatedCost: effectiveCost, headroom: headroom, detail: detail
+        )
     }
 }

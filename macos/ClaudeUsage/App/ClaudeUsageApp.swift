@@ -9,7 +9,9 @@ struct ClaudeUsageApp: App {
     @State private var model = AppModel()
 
     var body: some Scene {
-        MenuBarExtra {
+        MenuBarExtra(isInserted: Binding<Bool>(
+            get: { model.shouldAppearInMenuBar }, set: { _ in }
+        )) {
             PopoverView(model: model)
                 // The panel owns the 1 Hz clock only while it is on screen.
                 .onAppear { model.isPopoverOpen = true }
@@ -39,6 +41,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         AppModelRegistry.shared.model?.stop()
+    }
+
+    /// Launching the app again while it is already running (`open -a ClaudeUsage`, or
+    /// double-clicking it in Finder) fires this. It is the escape hatch for "hide when
+    /// healthy": the icon comes back for a grace period so Settings is reachable.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        AppModelRegistry.shared.model?.revealMenuBarTemporarily()
+        return true
     }
 }
 
@@ -77,13 +87,24 @@ struct MenuBarLabel: View {
     }
 
     private var icon: NSImage {
+        let now = Date()
+        let style = MenuBarIcon.Style(rawValue: model.settings.menuBarIconStyle) ?? .twinBars
         let metric = model.menuBarMetric
-        return MenuBarIcon.image(
-            fraction: metric.map { min($0.percent / 100, 1) },
+
+        // Twin bars show both providers, so it reads them directly rather than going through
+        // the single "selected metric" the other styles use.
+        let input = MenuBarIcon.Input(
+            claude: style.showsBothProviders
+                ? model.providerTightestPercent(.claude, now: now).map { $0 / 100 }
+                : metric.map { min($0.percent / 100, 1) },
+            chatgpt: style.showsBothProviders
+                ? model.providerTightestPercent(.chatgpt, now: now).map { $0 / 100 }
+                : nil,
             severity: metric?.severity ?? .normal,
             tint: model.settings.tintIconOnAlert,
-            attention: metric?.provider == .claude && !model.activity.attentionSessions.isEmpty
+            attention: !model.activity.attentionSessions.isEmpty
         )
+        return MenuBarIcon.image(style: style, input)
     }
 
     private var percentText: String {

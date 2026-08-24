@@ -5,20 +5,20 @@ import ClaudeUsageCore
 struct PopoverView: View {
     @Bindable var model: AppModel
     @State private var sparklineRange: SparklineRange = .fiveHours
+    @State private var checkMinutes: Double = 30
 
     private var now: Date { model.tick }
 
-    /// The one limit that gets the hero treatment. Everything else is a compact row.
-    private var hero: LimitWindow? { model.primaryLimit }
+    /// The one limit that gets the hero treatment — the tightest across every provider.
+    private var hero: LimitWindow? { model.unifiedHero }
 
+    /// Everything else, still ranked tightest-first, regardless of which service it came from.
     private var others: [LimitWindow] {
-        guard let snapshot = model.snapshot else { return [] }
-        return snapshot.limits.filter { $0.id != hero?.id }
+        model.allLimitsRanked.filter { !model.isSameLimit($0, hero) }
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            providerSwitcher
             header
             body(for: model.snapshot)
             footer
@@ -86,7 +86,9 @@ struct PopoverView: View {
             HStack(alignment: .firstTextBaseline) {
                 HStack(spacing: 6) {
                     StatusDot(color: headerStatusColor)
-                    Text(model.selectedProvider.headerTitle)
+                    // The panel is no longer one provider's view, so the title stops
+                    // claiming to be. It names a provider only when just one is tracked.
+                    Text(headerTitle)
                         .font(DS.label(13, weight: .semibold))
                         .foregroundStyle(DS.ink)
                 }
@@ -95,7 +97,7 @@ struct PopoverView: View {
                     .font(DS.figure(10))
                     .foregroundStyle(DS.inkFaint)
             }
-            if let note = model.selectedProvider.allowanceDescription {
+            if let note = headerSubtitle {
                 Text(note)
                     .font(DS.label(9.5))
                     .foregroundStyle(DS.inkFaint)
@@ -106,9 +108,24 @@ struct PopoverView: View {
         .padding(.bottom, 12)
     }
 
+    private var headerTitle: String {
+        let live = model.providersWithData
+        guard live.count == 1, let only = live.first else { return "Usage" }
+        return only.headerTitle
+    }
+
+    /// The Codex/agentic caveat only belongs here when ChatGPT is the only thing on screen;
+    /// in a mixed list it would look like it applied to the Claude rows too.
+    private var headerSubtitle: String? {
+        let live = model.providersWithData
+        guard live.count == 1, let only = live.first else { return nil }
+        return only.allowanceDescription
+    }
+
     private var statusLine: String {
         var parts: [String] = []
-        if let plan = model.planLabel { parts.append(plan) }
+        // With both providers listed, one plan label would be ambiguous.
+        if model.providersWithData.count == 1, let plan = model.planLabel { parts.append(plan) }
         if model.isRefreshing {
             parts.append("refreshing")
         } else if let last = model.lastSuccessAt {
@@ -118,28 +135,33 @@ struct PopoverView: View {
     }
 
     private var headerStatusColor: Color {
-        if model.snapshot == nil { return DS.inkFaint }
-        if model.lastError != nil { return DS.tight }
-        return DS.accent(model.overallSeverity)
+        if model.providersWithData.isEmpty { return DS.inkFaint }
+        if !model.providerErrors.isEmpty { return DS.tight }
+        // Worst severity across everything tracked, not just the formerly-selected provider.
+        let worst = model.allLimitsRanked.map(\.severity).max() ?? .normal
+        return DS.accent(worst)
     }
 
     // MARK: Body
 
     @ViewBuilder
     private func body(for snapshot: UsageSnapshot?) -> some View {
-        if model.snapshot == nil && shouldShowConnectPrompt {
-            if model.selectedProvider == .claude {
+        if model.providersWithData.isEmpty && shouldShowConnectPrompt {
+            // Nothing anywhere: offer the provider that is closest to being usable.
+            if model.state(for: .claude).snapshot == nil && model.lastError == .missingToken {
                 ClaudeConnectPrompt(model: model).padding(.bottom, 14)
             } else {
                 ChatGPTConnectPrompt(model: model).padding(.bottom, 14)
             }
         } else if let snapshot {
             VStack(alignment: .leading, spacing: DS.Space.l) {
-                if let error = model.lastError {
+                // One banner per failing provider: a dead Codex token must not hide a Claude
+                // problem, and neither should silence the other's data.
+                ForEach(model.providerErrors, id: \.0) { provider, error in
                     ErrorBanner(
                         error: error,
-                        provider: model.selectedProvider,
-                        isShowingCached: true
+                        provider: provider,
+                        isShowingCached: model.state(for: provider).snapshot != nil
                     )
                     .panelRow()
                 }
@@ -147,21 +169,37 @@ struct PopoverView: View {
                 if let hero {
                     HeroLimitView(
                         limit: hero,
-                        projection: model.projections[hero.id],
-                        isTightest: snapshot.limits.count > 1,
+                        projection: model.projection(for: hero),
+                        isTightest: model.allLimitsRanked.count > 1,
+                        showsProvider: model.providersWithData.count > 1,
+                        pace: UsageAnalytics.pace(for: hero, now: now),
                         now: now
                     )
+                }
+
+                if let hero, model.settings.showRunwayCheck {
+                    VStack(alignment: .leading, spacing: DS.Space.m) {
+                        SectionRule()
+                        RunwayCheckView(
+                            limit: hero, samples: model.samples, now: now,
+                            minutes: $checkMinutes
+                        )
+                    }
                 }
 
                 if !others.isEmpty {
                     VStack(alignment: .leading, spacing: 10) {
                         SectionRule()
-                        Eyebrow(text: "Other limits").panelRow()
-                        ForEach(others) { limit in
+                        Eyebrow(
+                            text: "All limits",
+                            detail: model.providersWithData.count > 1 ? "tightest first" : nil
+                        ).panelRow()
+                        ForEach(others, id: \.rowKey) { limit in
                             CompactLimitRow(
                                 limit: limit,
-                                projection: model.projections[limit.id],
-                                now: now
+                                projection: model.projection(for: limit),
+                                now: now,
+                                showsProvider: model.providersWithData.count > 1
                             )
                         }
                     }
@@ -429,7 +467,7 @@ private struct ChatGPTAccountMetadata: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Eyebrow(text: "Account allowance")
+            Eyebrow(text: "ChatGPT allowance")
             if let credits = snapshot.credits, credits.isPresentable {
                 metadataRow("Credits", creditsText(credits))
             }

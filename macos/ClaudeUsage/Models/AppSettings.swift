@@ -104,7 +104,14 @@ public struct AppSettings: Sendable, Codable, Equatable {
     public var selectedProvider: UsageProvider = .claude
 
     // Menu bar
-    public var displayMode: MenuBarDisplayMode = .iconAndPercent
+    public var displayMode: MenuBarDisplayMode = .iconOnly
+    /// Raw value of `MenuBarIcon.Style`. Stored as a string so Core need not know about the
+    /// app target's drawing code.
+    public var menuBarIconStyle: String = "twinBars"
+    /// Drop out of the menu bar while nothing is close to a limit.
+    public var hideWhenHealthy: Bool = false
+    /// …below this percentage. Above it the icon always returns.
+    public var hideBelowPercent: Double = 50
     public var primaryMetric: PrimaryMetric = .auto
     /// Tint the icon orange/red at warning/critical. Off = always a monochrome template icon.
     public var tintIconOnAlert: Bool = true
@@ -136,6 +143,12 @@ public struct AppSettings: Sendable, Codable, Equatable {
     // History
     public var historyRetention: HistoryRetention = .week
     public var sparklineRange: SparklineRange = .fiveHours
+
+    /// Show the per-project breakdown of where this window's quota went.
+    public var showAttribution: Bool = true
+
+    /// Show the "can I start a 30m task?" check under the hero.
+    public var showRunwayCheck: Bool = true
 
     // Activity
     public var activityEnabled: Bool = true

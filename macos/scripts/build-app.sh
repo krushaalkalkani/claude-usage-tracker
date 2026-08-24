@@ -63,6 +63,57 @@ printf 'APPL????' > "$STAGED_APP/Contents/PkgInfo"
 # notification path and cannot register as a login item. Sign in /private/tmp: Desktop can be
 # managed by File Provider, which attaches provenance metadata quickly enough to make codesign
 # reject an otherwise clean bundle. The verified signature is then copied into build/.
+# ---- Notification Centre widget (opt-in: BUILD_WIDGET=1) --------------------------
+# SwiftPM cannot emit an .appex, so the extension is hand-assembled: the widget is built as a
+# plain executable, wrapped in the bundle layout WidgetKit expects, and nested under
+# Contents/PlugIns of the *staged* app. It is signed first, because signing the host seals its
+# PlugIns directory.
+#
+# OFF BY DEFAULT, and not because the bundle is wrong. It assembles cleanly and both
+# signatures verify — but PlugInKit never registers it: `pluginkit -m` never lists it,
+# `pluginkit -a` and `lsregister -f` both no-op, and pkd logs no rejection, i.e. the extension
+# is never even considered. Ad-hoc signing is the blocker; WidgetKit extensions need a real
+# signing identity. Shipping a silently dead .appex inside the app is worse than shipping
+# none, so this only runs when asked for.
+#
+#   BUILD_WIDGET=1 ./scripts/build-app.sh --install
+#
+# With a Developer ID (or opening Package.swift in Xcode) the same code should register.
+if [ "${BUILD_WIDGET:-0}" = "1" ]; then
+  echo "==> widget extension"
+  swift build -c "$CONFIG" --product ClaudeUsageWidget >/dev/null
+  WIDGET_BIN="$(swift build -c "$CONFIG" --product ClaudeUsageWidget --show-bin-path)/ClaudeUsageWidget"
+  APPEX="$STAGED_APP/Contents/PlugIns/ClaudeUsageWidget.appex"
+  mkdir -p "$APPEX/Contents/MacOS"
+  ditto --noextattr --norsrc --noacl "$WIDGET_BIN" "$APPEX/Contents/MacOS/ClaudeUsageWidget"
+  cat > "$APPEX/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleExecutable</key><string>ClaudeUsageWidget</string>
+  <key>CFBundleIdentifier</key><string>com.krushal.claude-usage-tracker.widget</string>
+  <key>CFBundleName</key><string>ClaudeUsageWidget</string>
+  <key>CFBundleDisplayName</key><string>Claude &amp; ChatGPT Usage</string>
+  <key>CFBundlePackageType</key><string>XPC!</string>
+  <key>CFBundleShortVersionString</key><string>2.0</string>
+  <key>CFBundleVersion</key><string>2.0</string>
+  <key>LSMinimumSystemVersion</key><string>14.0</string>
+  <key>NSExtension</key>
+  <dict>
+    <key>NSExtensionPointIdentifier</key><string>com.apple.widgetkit-extension</string>
+  </dict>
+</dict>
+</plist>
+PLIST
+  if codesign --force --sign - --timestamp=none "$APPEX" >/dev/null 2>&1; then
+    echo "    widget: com.krushal.claude-usage-tracker.widget"
+  else
+    echo "    widget signing failed — removing it rather than shipping an unsigned appex" >&2
+    rm -rf "$STAGED_APP/Contents/PlugIns"
+  fi
+fi
+
 echo "==> codesign (ad-hoc)"
 if codesign --force --sign - \
      --identifier "com.krushal.claude-usage-tracker" \

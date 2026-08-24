@@ -134,9 +134,13 @@ struct SettingsTests {
         defaults.set(partial, forKey: "settings.v2")
         let loaded = SettingsStore(defaults: defaults).current
         #expect(loaded.refreshInterval == .fiveMinutes)
-        #expect(loaded.displayMode == .iconAndPercent)
+        // The default is icon-only now that the twin-bars glyph carries both providers
+        // without digits; a percentage beside it would be the same fact told twice.
+        #expect(loaded.displayMode == .iconOnly)
+        #expect(loaded.menuBarIconStyle == "twinBars")
         #expect(loaded.usageThresholds == [50, 75, 90, 95, 100])
         #expect(loaded.selectedProvider == .claude)
+        #expect(!loaded.hideWhenHealthy, "hiding is opt-in")
     }
 
     @Test("reset restores every default")

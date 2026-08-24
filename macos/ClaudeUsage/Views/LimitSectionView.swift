@@ -18,6 +18,10 @@ struct HeroLimitView: View {
     let limit: LimitWindow
     let projection: UsageProjection?
     let isTightest: Bool
+    /// Name the provider in the eyebrow. Off when only one service is being tracked.
+    var showsProvider: Bool = true
+    /// Ahead of / behind an even burn for this window. Nil when the window has barely begun.
+    var pace: UsagePace?
     let now: Date
 
     var body: some View {
@@ -74,6 +78,10 @@ struct HeroLimitView: View {
                     now: now
                 )
             }
+
+            if let pace {
+                PaceBar(pace: pace, severity: limit.severity)
+            }
         }
         .padding(DS.Space.m + 2)
         .background(
@@ -89,6 +97,14 @@ struct HeroLimitView: View {
     }
 
     private var periodLabel: String {
+        // In a list spanning services, an unlabelled "WEEKLY · 7-DAY" hero is ambiguous.
+        guard showsProvider else { return basePeriodLabel }
+        // "ChatGPT · Weekly · 7-day" states the period twice; the short title is enough
+        // once the provider is named.
+        return "\(limit.provider.displayName) · \(limit.shortTitle)"
+    }
+
+    private var basePeriodLabel: String {
         let period = durationLabel
         if let model = limit.modelName { return "\(model) · \(period)" }
         if let surface = limit.surface { return "\(surface) · \(period)" }
@@ -126,14 +142,27 @@ struct CompactLimitRow: View {
     let limit: LimitWindow
     let projection: UsageProjection?
     let now: Date
+    /// Prefixes the row with the provider. On by default: in one ranked list across services,
+    /// "Weekly 49%" is ambiguous without saying whose weekly it is.
+    var showsProvider: Bool = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: DS.Space.s) {
-                Text(label)
-                    .font(DS.label(12, weight: .medium))
-                    .foregroundStyle(DS.ink)
-                    .lineLimit(1)
+                HStack(spacing: 4) {
+                    if showsProvider {
+                        Text(limit.provider.displayName)
+                            .font(DS.label(12))
+                            .foregroundStyle(DS.inkFaint)
+                        Text("·")
+                            .font(DS.label(12))
+                            .foregroundStyle(DS.inkFaint.opacity(0.6))
+                    }
+                    Text(label)
+                        .font(DS.label(12, weight: .medium))
+                        .foregroundStyle(DS.ink)
+                }
+                .lineLimit(1)
 
                 if limit.isActive {
                     Chip(text: "active", color: DS.inkFaint)
@@ -230,5 +259,61 @@ struct SpendRow: View {
         if spend.enabled { return "enabled" }
         if spend.limitReached == true { return "cap reached" }
         return "disabled"
+    }
+}
+
+
+/// How consumption compares with an even burn across the window.
+///
+/// "62% used" is unreadable on its own — 62% by Wednesday is trouble, 62% by Sunday is fine.
+/// The marker is where an even burn would be right now; the fill is where you actually are.
+struct PaceBar: View {
+    let pace: UsagePace
+    let severity: Severity
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            GeometryReader { geo in
+                let w = geo.size.width
+                ZStack(alignment: .leading) {
+                    Capsule().fill(DS.dim).frame(height: 3)
+                    Capsule()
+                        .fill(tint)
+                        .frame(width: max(3, w * min(pace.used / 100, 1)), height: 3)
+                    // The even-burn marker.
+                    Rectangle()
+                        .fill(DS.inkMuted)
+                        .frame(width: 1.5, height: 9)
+                        .offset(x: w * min(pace.windowElapsed, 1) - 0.75)
+                }
+                .frame(height: 9)
+                .frame(maxHeight: .infinity, alignment: .center)
+            }
+            .frame(height: 9)
+
+            HStack(spacing: 5) {
+                Image(systemName: symbol)
+                    .font(.system(size: 8.5, weight: .semibold))
+                Text(pace.summary)
+                    .font(DS.label(10.5, weight: .medium))
+                Spacer(minLength: 0)
+                Text("\(Int((pace.windowElapsed * 100).rounded()))% of window elapsed")
+                    .font(DS.label(10))
+                    .foregroundStyle(DS.inkFaint)
+            }
+            .foregroundStyle(tint)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(pace.summary), \(Int((pace.windowElapsed * 100).rounded())) percent of the window elapsed")
+    }
+
+    private var tint: Color {
+        if pace.isOnPace { return DS.inkMuted }
+        return pace.delta > 0 ? DS.accent(severity == .normal ? .warning : severity) : DS.healthy
+    }
+
+    private var symbol: String {
+        if pace.isOnPace { return "equal.circle" }
+        return pace.delta > 0 ? "arrow.up.right" : "arrow.down.right"
     }
 }

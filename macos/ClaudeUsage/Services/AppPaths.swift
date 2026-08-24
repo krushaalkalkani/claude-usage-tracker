@@ -62,7 +62,7 @@ enum AtomicFile {
 }
 
 extension JSONEncoder {
-    static let store: JSONEncoder = {
+    public static let store: JSONEncoder = {
         let e = JSONEncoder()
         e.dateEncodingStrategy = .iso8601
         return e
@@ -70,7 +70,7 @@ extension JSONEncoder {
 }
 
 extension JSONDecoder {
-    static let store: JSONDecoder = {
+    public static let store: JSONDecoder = {
         let d = JSONDecoder()
         d.dateDecodingStrategy = .custom { decoder in
             let c = try decoder.singleValueContainer()

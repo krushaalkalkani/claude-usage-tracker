@@ -20,6 +20,13 @@ let package = Package(
             exclude: ["Models", "Services", "Analytics", "Notifications", "Tests", "Resources"],
             sources: ["App", "Views"]
         ),
+        // Built as an executable, then hand-assembled into a .appex by build-app.sh —
+        // SwiftPM has no notion of an app extension bundle.
+        .executableTarget(
+            name: "ClaudeUsageWidget",
+            dependencies: ["ClaudeUsageCore"],
+            path: "ClaudeUsage/Widget"
+        ),
         .testTarget(
             name: "ClaudeUsageCoreTests",
             dependencies: ["ClaudeUsageCore"],

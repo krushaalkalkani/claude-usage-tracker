@@ -212,3 +212,10 @@ public enum ProviderUsageSelection {
         }
     }
 }
+
+
+extension LimitWindow {
+    /// Unique across providers. `id` alone is not: `weekly_all` exists on Claude and ChatGPT
+    /// alike, so using it as a `ForEach` identity collapses the two into one row.
+    public var rowKey: String { "\(provider.rawValue)#\(id)" }
+}
