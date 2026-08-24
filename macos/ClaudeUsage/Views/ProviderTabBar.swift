@@ -22,9 +22,14 @@ struct ProviderTabBar: View {
                     hasError: model.state(for: provider).lastError != nil,
                     needsAttention: provider == .claude && !model.activity.attentionSessions.isEmpty
                 ) {
-                    withAnimation(.easeOut(duration: 0.16)) {
-                        model.selectProvider(provider)
-                    }
+                    // Deliberately not wrapped in withAnimation: the popover window resizes
+                    // itself to fit each tab's content (.windowResizability(.contentSize)),
+                    // and animating the content diff at the same time produced a visible
+                    // stutter — two animation systems moving the same pixels on different
+                    // curves. The tab pill still animates its own highlight below; only the
+                    // body swap itself is instant, which is how Xcode's inspector tabs and
+                    // Mail's sidebar switcher behave too.
+                    model.selectProvider(provider)
                 }
             }
         }
@@ -39,7 +44,7 @@ struct ProviderTabBar: View {
             let all = UsageProvider.allCases
             guard let i = all.firstIndex(of: model.selectedProvider) else { return }
             let next = direction == .right ? (i + 1) % all.count : (i - 1 + all.count) % all.count
-            withAnimation(.easeOut(duration: 0.16)) { model.selectProvider(all[next]) }
+            model.selectProvider(all[next])
         }
     }
 }
@@ -77,6 +82,10 @@ private struct TabButton: View {
                     .strokeBorder(isSelected ? DS.surfaceStroke : .clear, lineWidth: 1)
             )
             .contentShape(Rectangle())
+            // Scoped to just this pill's own fill/stroke/shadow, not to selectProvider's
+            // effect on the rest of the panel — the body below switches instantly (see the
+            // note on the button action above), so only the highlight itself needs to ease.
+            .animation(.easeOut(duration: 0.15), value: isSelected)
         }
         .buttonStyle(.plain)
         .accessibilityLabel(accessibilityLabel)
