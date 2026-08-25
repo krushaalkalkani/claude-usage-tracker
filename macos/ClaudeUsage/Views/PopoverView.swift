@@ -6,6 +6,7 @@ struct PopoverView: View {
     @Bindable var model: AppModel
     @State private var sparklineRange: SparklineRange = .fiveHours
     @State private var checkMinutes: Double = 30
+    @State private var showingCursorLogin = false
 
     private var now: Date { model.tick }
 
@@ -33,6 +34,9 @@ struct PopoverView: View {
         .onAppear { sparklineRange = model.settings.sparklineRange }
         .onChange(of: sparklineRange) { _, newValue in
             model.updateSettings { $0.sparklineRange = newValue }
+        }
+        .sheet(isPresented: $showingCursorLogin) {
+            CursorLoginSheet(model: model)
         }
     }
 
@@ -95,10 +99,14 @@ struct PopoverView: View {
         if snapshot == nil && shouldShowConnectPrompt {
             // Each tab offers its own connect flow — switching to ChatGPT with Claude already
             // connected should not fall through to Claude's prompt or an empty state.
-            if model.selectedProvider == .claude {
+            switch model.selectedProvider {
+            case .claude:
                 ClaudeConnectPrompt(model: model).padding(.bottom, 14)
-            } else {
+            case .chatgpt:
                 ChatGPTConnectPrompt(model: model).padding(.bottom, 14)
+            case .cursor:
+                CursorConnectPrompt(model: model) { showingCursorLogin = true }
+                    .padding(.bottom, 14)
             }
         } else if let snapshot {
             VStack(alignment: .leading, spacing: DS.Space.l) {
@@ -215,7 +223,8 @@ struct PopoverView: View {
     private var shouldShowConnectPrompt: Bool {
         guard model.snapshot == nil else { return false }
         switch model.lastError {
-        case .missingToken, .unauthorized, .forbidden, .codexAuthenticationRequired, .cliNotFound:
+        case .missingToken, .unauthorized, .forbidden, .codexAuthenticationRequired, .cliNotFound,
+             .missingCursorSession:
             return true
         default:
             return false
@@ -310,7 +319,8 @@ private struct ErrorBanner: View {
 
     private var symbol: String {
         switch error {
-        case .unauthorized, .forbidden, .missingToken, .codexAuthenticationRequired:
+        case .unauthorized, .forbidden, .missingToken, .codexAuthenticationRequired,
+             .missingCursorSession:
             return "key.slash"
         case .cliNotFound, .unsupportedCLI: return "terminal"
         case .offline: return "wifi.slash"
@@ -400,6 +410,35 @@ private struct ChatGPTConnectPrompt: View {
             return "Install the Codex CLI and sign in to ChatGPT from Codex. Usage will load automatically after you choose to sign in."
         }
         return "Codex is installed, but its ChatGPT sign-in needs attention. Open Codex or run codex login when you are ready."
+    }
+}
+
+private struct CursorConnectPrompt: View {
+    @Bindable var model: AppModel
+    var onConnect: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Text("Connect Cursor")
+                .font(DS.label(12, weight: .semibold))
+                .foregroundStyle(DS.ink)
+            Text("Cursor has no read-only CLI or API token, so this app signs in through a one-time embedded browser and keeps only the resulting session in your login keychain.")
+                .font(DS.label(11))
+                .foregroundStyle(DS.inkMuted)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 8) {
+                Button("Connect Cursor") { onConnect() }
+                Button("Look again") { model.refreshNow() }
+                Spacer()
+            }
+            .controlSize(.small)
+
+            Text("The tracker never reads cookies from Safari or Chrome — only from this sign-in.")
+                .font(DS.label(10))
+                .foregroundStyle(DS.inkFaint)
+        }
+        .panelRow()
     }
 }
 

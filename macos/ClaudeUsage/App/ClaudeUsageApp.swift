@@ -116,13 +116,15 @@ struct MenuBarLabel: View {
 
     private var accessibilityText: String {
         guard let metric = model.menuBarMetric else {
-            return "Claude and ChatGPT usage unavailable"
+            return "Usage unavailable"
         }
         let name = metric.limit?.title ?? "usage"
         return "\(metric.provider.displayName) \(name) \(Int(metric.percent.rounded())) percent used"
     }
 
+    /// Claude keeps its historical tag-free look when it is the only live provider; every
+    /// other provider always shows its tag so it is never mistaken for Claude.
     private func showProviderTag(for metric: MenuBarUsageMetric) -> Bool {
-        metric.provider == .chatgpt || model.liveProviderCount > 1
+        metric.provider != .claude || model.liveProviderCount > 1
     }
 }

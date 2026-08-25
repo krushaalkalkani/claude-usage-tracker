@@ -57,6 +57,8 @@ public final class AppModel {
 
     private let api: UsageAPIClientProtocol
     private let chatGPT: ChatGPTUsageServiceProtocol
+    private let cursor: CursorUsageServiceProtocol
+    private let cursorSessionStore: CursorSessionCookieStoreProtocol
     private let tokenStore: TokenStore
     private let history: HistoryStore
     private let settingsStore: SettingsStore
@@ -78,6 +80,8 @@ public final class AppModel {
     public init(
         api: UsageAPIClientProtocol = UsageAPIClient(),
         chatGPT: ChatGPTUsageServiceProtocol = ChatGPTUsageService(),
+        cursor: CursorUsageServiceProtocol = CursorUsageService(),
+        cursorSessionStore: CursorSessionCookieStoreProtocol = CursorSessionCookieStore(),
         tokenStore: TokenStore = TokenStore(),
         history: HistoryStore = HistoryStore(),
         settingsStore: SettingsStore = SettingsStore(),
@@ -92,6 +96,8 @@ public final class AppModel {
         self.selectedProvider = settingsStore.current.selectedProvider
         self.api = api
         self.chatGPT = chatGPT
+        self.cursor = cursor
+        self.cursorSessionStore = cursorSessionStore
         self.tokenStore = tokenStore
         self.history = history
         self.settingsStore = settingsStore
@@ -229,7 +235,8 @@ public final class AppModel {
     private func refreshAllUsage() async {
         async let claude: Void = refreshClaudeUsage()
         async let chatgpt: Void = refreshChatGPTUsage()
-        _ = await (claude, chatgpt)
+        async let cursorRefresh: Void = refreshCursorUsage()
+        _ = await (claude, chatgpt, cursorRefresh)
     }
 
     private func shouldRefresh(_ provider: UsageProvider, now: Date = Date()) -> Bool {
@@ -305,6 +312,29 @@ public final class AppModel {
             recordFailure(error, for: .chatgpt)
         } catch {
             recordFailure(.cliUnavailable, for: .chatgpt)
+        }
+    }
+
+    private func refreshCursorUsage() async {
+        guard shouldRefresh(.cursor) else { return }
+        updateProvider(.cursor) {
+            $0.isRefreshing = true
+            $0.cliDetected = cursor.hasStoredSession()
+        }
+        defer { updateProvider(.cursor) { $0.isRefreshing = false } }
+
+        do {
+            let result = try await cursor.fetchUsage()
+            updateProvider(.cursor) { $0.cliDetected = true }
+            handleSuccess(
+                result.snapshot, planLabel: result.planLabel, source: .cursorWebViewSession
+            )
+        } catch is CancellationError {
+            return
+        } catch let error as UsageAPIError {
+            recordFailure(error, for: .cursor)
+        } catch {
+            recordFailure(.network(error.localizedDescription), for: .cursor)
         }
     }
 
@@ -392,7 +422,8 @@ public final class AppModel {
             state.lastError = error
             if state.snapshot != nil { state.isShowingCachedData = true }
             switch error {
-            case .missingToken, .unauthorized, .forbidden, .codexAuthenticationRequired:
+            case .missingToken, .unauthorized, .forbidden, .codexAuthenticationRequired,
+                 .missingCursorSession:
                 state.connectionState = .authenticationRequired
             case .cliNotFound:
                 state.connectionState = .unavailable
@@ -594,7 +625,7 @@ public final class AppModel {
     /// One line explaining which limit matters most right now.
     public var headline: String {
         if lastError == .missingToken || lastError == .codexAuthenticationRequired
-            || lastError == .cliNotFound {
+            || lastError == .cliNotFound || lastError == .missingCursorSession {
             return "Not connected"
         }
         guard let snapshot, let bottleneck = snapshot.bottleneck else {
@@ -713,6 +744,39 @@ public final class AppModel {
         LastUsageCache.clear(provider: .claude)
     }
 
+    /// Called by `CursorLoginSheet` once the embedded `WKWebView` login has produced a
+    /// `cursor.com` cookie. Saving triggers an immediate refresh, exactly like `saveToken`.
+    public func saveCursorSession(_ cookie: String) -> Bool {
+        let ok = cursorSessionStore.save(cookie: cookie)
+        if ok {
+            updateProvider(.cursor) { $0.lastError = nil }
+            refreshNow()
+        }
+        return ok
+    }
+
+    public func hasCursorSession() -> Bool {
+        cursorSessionStore.load() != nil
+    }
+
+    public func disconnectCursor() {
+        cursorSessionStore.clear()
+        updateProvider(.cursor) {
+            $0.snapshot = nil
+            $0.lastSuccessAt = nil
+            $0.lastError = .missingCursorSession
+            $0.isShowingCachedData = false
+            $0.connectionState = .authenticationRequired
+            $0.dataSource = nil
+            $0.planLabel = nil
+            $0.cliDetected = false
+            $0.projections = [:]
+            $0.surgingLimitIDs = []
+            $0.weeklyAveragePerDay = nil
+        }
+        LastUsageCache.clear(provider: .cursor)
+    }
+
     public func dashboardURL(for provider: UsageProvider) -> URL {
         if provider == .claude, let custom = URL(string: settings.dashboardURL) {
             return custom
@@ -747,6 +811,8 @@ public final class AppModel {
         let model = AppModel(
             api: DeadAPIClient(),
             chatGPT: DeadChatGPTService(),
+            cursor: DeadCursorService(),
+            cursorSessionStore: DeadCursorSessionStore(),
             history: HistoryStore(url: URL(fileURLWithPath: "/dev/null")),
             settingsStore: SettingsStore(
                 defaults: UserDefaults(suiteName: "preview-\(UUID().uuidString)") ?? .standard
@@ -770,8 +836,8 @@ public final class AppModel {
             $0.lastError = error
             $0.isShowingCachedData = error != nil
             $0.connectionState = error == nil ? .connected : .unavailable
-            $0.dataSource = snapshot.provider == .claude ? .anthropicOAuth : .codexCLI
-            $0.cliDetected = snapshot.provider == .chatgpt ? true : nil
+            $0.dataSource = Self.previewDataSource(for: snapshot.provider)
+            $0.cliDetected = snapshot.provider == .claude ? nil : true
         }
         model.tick = now
         model.selectProvider(snapshot.provider)
@@ -796,8 +862,8 @@ public final class AppModel {
             $0.lastError = error
             $0.isShowingCachedData = error != nil
             $0.connectionState = error == nil ? .connected : .unavailable
-            $0.dataSource = snapshot.provider == .claude ? .anthropicOAuth : .codexCLI
-            $0.cliDetected = snapshot.provider == .chatgpt ? true : nil
+            $0.dataSource = Self.previewDataSource(for: snapshot.provider)
+            $0.cliDetected = snapshot.provider == .claude ? nil : true
         }
         if select { selectProvider(snapshot.provider) }
         recomputeAnalytics(for: snapshot.provider)
@@ -824,7 +890,7 @@ public final class AppModel {
             $0.lastSuccessAt = nil
             $0.lastError = error
             $0.isShowingCachedData = false
-            $0.connectionState = error == .codexAuthenticationRequired
+            $0.connectionState = (error == .codexAuthenticationRequired || error == .missingCursorSession)
                 ? .authenticationRequired : .unavailable
             $0.cliDetected = cliDetected
             $0.dataSource = nil
@@ -841,6 +907,25 @@ public final class AppModel {
     private struct DeadChatGPTService: ChatGPTUsageServiceProtocol {
         func fetchUsage() async throws -> ChatGPTUsageResult { throw UsageAPIError.offline }
         func isCLIDetected() -> Bool { false }
+    }
+
+    private struct DeadCursorService: CursorUsageServiceProtocol {
+        func fetchUsage() async throws -> CursorUsageResult { throw UsageAPIError.offline }
+        func hasStoredSession() -> Bool { false }
+    }
+
+    private struct DeadCursorSessionStore: CursorSessionCookieStoreProtocol {
+        func load() -> String? { nil }
+        func save(cookie: String) -> Bool { false }
+        func clear() -> Bool { false }
+    }
+
+    private static func previewDataSource(for provider: UsageProvider) -> ProviderDataSource {
+        switch provider {
+        case .claude: return .anthropicOAuth
+        case .chatgpt: return .codexCLI
+        case .cursor: return .cursorWebViewSession
+        }
     }
 
     /// Sanitized debug text. Contains the response body only — never the token, and with the

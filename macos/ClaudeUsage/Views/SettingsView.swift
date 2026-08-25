@@ -172,6 +172,8 @@ private struct ProvidersPane: View {
     @Bindable var model: AppModel
     @State private var token = ""
     @State private var saveResult: String?
+    @State private var cursorResult: String?
+    @State private var showingCursorLogin = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -237,7 +239,51 @@ private struct ProvidersPane: View {
                 .padding(.horizontal, 11)
                 .padding(.vertical, 8)
             }
+
+            SettingsSection(
+                title: "Cursor",
+                footnote: "Cursor has no read-only CLI or API token, so the tracker signs in through a one-time embedded browser and stores only the resulting session cookie in your login keychain."
+            ) {
+                SettingsValueRow(title: "Session", value: cursorSession)
+                RowRule()
+                SettingsValueRow(title: "Connection", value: cursorConnection)
+                RowRule()
+                SettingsValueRow(title: "Data source", value: cursorSource)
+                RowRule()
+                HStack(spacing: 8) {
+                    Button("Connect Cursor") { showingCursorLogin = true }
+                    Button("Remove stored session") {
+                        model.disconnectCursor()
+                        cursorResult = "Removed."
+                    }
+                    .disabled(!model.hasCursorSession())
+                    Spacer(minLength: 4)
+                    if let cursorResult {
+                        Text(cursorResult)
+                            .font(DS.label(10.5))
+                            .foregroundStyle(DS.inkFaint)
+                    }
+                }
+                .controlSize(.small)
+                .padding(.horizontal, 11)
+                .padding(.vertical, 8)
+            }
         }
+        .sheet(isPresented: $showingCursorLogin) {
+            CursorLoginSheet(model: model)
+        }
+    }
+
+    private var cursorSession: String {
+        model.hasCursorSession() ? "Connected" : "Not connected"
+    }
+
+    private var cursorConnection: String {
+        connectionLabel(model.state(for: .cursor).connectionState)
+    }
+
+    private var cursorSource: String {
+        model.state(for: .cursor).dataSource?.label ?? "Not available"
     }
 
     private var claudeConnection: String {
@@ -514,7 +560,7 @@ private struct HistoryPane: View {
                 RowRule()
                 SettingsValueRow(
                     title: "Samples retained",
-                    value: "Claude \(model.state(for: .claude).samples.count) · ChatGPT \(model.state(for: .chatgpt).samples.count)"
+                    value: "Claude \(model.state(for: .claude).samples.count) · ChatGPT \(model.state(for: .chatgpt).samples.count) · Cursor \(model.state(for: .cursor).samples.count)"
                 )
                 RowRule()
                 HStack(spacing: 8) {
@@ -611,17 +657,17 @@ private struct PrivacyPane: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             SettingsSection(title: "What leaves this Mac") {
-                paragraph("Claude usage is read from Anthropic. ChatGPT/Codex usage is read through the local Codex CLI; if that read-only method is unavailable, an isolated request may be sent directly to ChatGPT using Codex's existing login. There is no telemetry, analytics endpoint, crash reporter, or backend belonging to this project.")
+                paragraph("Claude usage is read from Anthropic. ChatGPT/Codex usage is read through the local Codex CLI; if that read-only method is unavailable, an isolated request may be sent directly to ChatGPT using Codex's existing login. Cursor usage is read from Cursor's own dashboard endpoints using the session cookie from a one-time embedded sign-in. There is no telemetry, analytics endpoint, crash reporter, or backend belonging to this project.")
             }
 
             SettingsSection(title: "Where credentials live") {
-                paragraph("Claude credentials stay in your login keychain or remain managed by Claude Code. ChatGPT credentials remain managed by Codex. The tracker reads the local Codex OAuth file only for the isolated fallback, never modifies it, and never stores ChatGPT credentials.")
+                paragraph("Claude credentials stay in your login keychain or remain managed by Claude Code. ChatGPT credentials remain managed by Codex. The tracker reads the local Codex OAuth file only for the isolated fallback, never modifies it, and never stores ChatGPT credentials. The Cursor session cookie is captured once from an embedded sign-in and stored only in your login keychain — this app never reads Safari's, Chrome's, or any other browser's cookies.")
                 RowRule()
                 paragraph("Credentials, account IDs, emails, prompts, responses, and session content are never logged or included in the copied debug report.")
             }
 
-            SettingsSection(title: "What ChatGPT usage means") {
-                paragraph("OpenAI numbers in this app are ChatGPT - Codex/agentic allowance. OpenAI exposes separate allowances for models and features, so this is not a meter for every ordinary ChatGPT conversation.")
+            SettingsSection(title: "What ChatGPT and Cursor usage mean") {
+                paragraph("OpenAI numbers in this app are ChatGPT - Codex/agentic allowance. OpenAI exposes separate allowances for models and features, so this is not a meter for every ordinary ChatGPT conversation. Cursor's \"Grok Bot\" figure is a Cursor-bundled bot feature, unrelated to any xAI/Grok subscription.")
             }
 
             SettingsSection(title: "Stored locally") {
@@ -669,6 +715,7 @@ private struct PrivacyPane: View {
             ("history.json", "usage percentages and timestamps"),
             ("last-usage.json", "the most recent Claude snapshot"),
             ("last-usage-chatgpt.json", "the most recent ChatGPT snapshot"),
+            ("last-usage-cursor.json", "the most recent Cursor snapshot"),
             ("sessions/", "Claude Code session metadata"),
             ("events.jsonl", "the last 200 hook event names"),
             ("notifications.json", "which alerts have already fired"),

@@ -21,6 +21,10 @@ public enum UsageAPIError: Error, Equatable, Sendable {
     case cliTimedOut
     case cliUnavailable
     case unsupportedCLI
+    /// No Cursor session cookie is stored in Keychain — the one-time WebView login has never
+    /// completed (or was removed). Distinct from `.unauthorized`, which means a stored cookie
+    /// was rejected by cursor.com.
+    case missingCursorSession
 
     public var isTransient: Bool {
         switch self {
@@ -37,13 +41,25 @@ public enum UsageAPIError: Error, Equatable, Sendable {
     public func title(for provider: UsageProvider) -> String {
         switch self {
         case .missingToken:
-            return provider == .chatgpt ? "Codex login required" : "Not connected"
+            switch provider {
+            case .chatgpt: return "Codex login required"
+            case .cursor: return "Cursor login required"
+            case .claude: return "Not connected"
+            }
         case .unauthorized:
-            return provider == .chatgpt ? "Codex login needs refresh" : "Authentication expired"
+            switch provider {
+            case .chatgpt: return "Codex login needs refresh"
+            case .cursor: return "Cursor session expired"
+            case .claude: return "Authentication expired"
+            }
         case .forbidden: return "Access denied"
         case .rateLimited: return "Rate limited"
         case .server:
-            return provider == .chatgpt ? "ChatGPT usage is unavailable" : "Anthropic is having trouble"
+            switch provider {
+            case .chatgpt: return "ChatGPT usage is unavailable"
+            case .cursor: return "Cursor usage is unavailable"
+            case .claude: return "Anthropic is having trouble"
+            }
         case .http: return "Unexpected response"
         case .offline: return "Offline"
         case .timedOut: return "Request timed out"
@@ -55,6 +71,7 @@ public enum UsageAPIError: Error, Equatable, Sendable {
         case .cliTimedOut: return "Codex CLI timed out"
         case .cliUnavailable: return "Codex CLI unavailable"
         case .unsupportedCLI: return "Codex CLI update needed"
+        case .missingCursorSession: return "Cursor login required"
         }
     }
 
@@ -65,17 +82,23 @@ public enum UsageAPIError: Error, Equatable, Sendable {
     public func detail(for provider: UsageProvider) -> String {
         switch self {
         case .missingToken:
-            return provider == .chatgpt
-                ? "Open Codex or run codex login, then refresh."
-                : "Add an OAuth token in Settings, or sign in to Claude Code."
+            switch provider {
+            case .chatgpt: return "Open Codex or run codex login, then refresh."
+            case .cursor: return "Connect Cursor in Settings, then refresh."
+            case .claude: return "Add an OAuth token in Settings, or sign in to Claude Code."
+            }
         case .unauthorized:
-            return provider == .chatgpt
-                ? "Open Codex or run codex login to refresh its credentials."
-                : "The token was rejected. Reconnect in Settings."
+            switch provider {
+            case .chatgpt: return "Open Codex or run codex login to refresh its credentials."
+            case .cursor: return "Your Cursor session expired. Reconnect in Settings."
+            case .claude: return "The token was rejected. Reconnect in Settings."
+            }
         case .forbidden:
-            return provider == .chatgpt
-                ? "Open Codex or run codex login to refresh its credentials."
-                : "This token is not allowed to read usage."
+            switch provider {
+            case .chatgpt: return "Open Codex or run codex login to refresh its credentials."
+            case .cursor: return "Your Cursor session expired. Reconnect in Settings."
+            case .claude: return "This token is not allowed to read usage."
+            }
         case .rateLimited(let after):
             if let after { return "Retrying in \(Int(after.rounded()))s." }
             return "Backing off before the next attempt."
@@ -103,6 +126,8 @@ public enum UsageAPIError: Error, Equatable, Sendable {
             return "The read-only Codex app-server could not return usage."
         case .unsupportedCLI:
             return "This Codex version does not expose account rate limits. Update Codex and refresh."
+        case .missingCursorSession:
+            return "Connect Cursor in Settings to sign in via the embedded browser."
         }
     }
 }

@@ -5,6 +5,7 @@ import Foundation
 public enum UsageProvider: String, Sendable, Codable, CaseIterable, Identifiable, Hashable {
     case claude
     case chatgpt
+    case cursor
 
     public var id: String { rawValue }
 
@@ -12,18 +13,20 @@ public enum UsageProvider: String, Sendable, Codable, CaseIterable, Identifiable
         switch self {
         case .claude: return "Claude"
         case .chatgpt: return "ChatGPT"
+        case .cursor: return "Cursor"
         }
     }
 
     public var headerTitle: String { "\(displayName) Usage" }
 
-    /// One-character status-item label using the provider company, so Claude and ChatGPT
-    /// cannot both be mistaken for "C". Anthropic is omitted when it is the only live
-    /// provider so the existing Claude-only menu-bar appearance stays unchanged.
+    /// One-character status-item label using the provider company, so no two providers can
+    /// be mistaken for one another. Anthropic is omitted when it is the only live provider so
+    /// the existing Claude-only menu-bar appearance stays unchanged.
     public var compactTag: String {
         switch self {
         case .claude: return "A"
         case .chatgpt: return "O"
+        case .cursor: return "C"
         }
     }
 
@@ -33,11 +36,17 @@ public enum UsageProvider: String, Sendable, Codable, CaseIterable, Identifiable
             return URL(string: "https://claude-usage-tracker-xi.vercel.app")!
         case .chatgpt:
             return URL(string: "https://chatgpt.com/codex/settings/usage")!
+        case .cursor:
+            return URL(string: "https://cursor.com/dashboard/spending")!
         }
     }
 
     public var allowanceDescription: String? {
-        self == .chatgpt ? "Codex / agentic allowance" : nil
+        switch self {
+        case .claude: return nil
+        case .chatgpt: return "Codex / agentic allowance"
+        case .cursor: return "Included usage + Grok Bot"
+        }
     }
 }
 
@@ -52,12 +61,14 @@ public enum ProviderDataSource: String, Sendable, Codable, Equatable {
     case anthropicOAuth
     case codexCLI
     case localCodexOAuth
+    case cursorWebViewSession
 
     public var label: String {
         switch self {
         case .anthropicOAuth: return "Anthropic OAuth"
         case .codexCLI: return "Codex CLI"
         case .localCodexOAuth: return "Local Codex OAuth"
+        case .cursorWebViewSession: return "Cursor session (WebView)"
         }
     }
 }
@@ -78,6 +89,9 @@ public struct ProviderUsageState: Sendable, Equatable {
     public var weeklyAveragePerDay: Double?
     public var connectionState: ProviderConnectionState
     public var dataSource: ProviderDataSource?
+    /// A local credential was found without needing a live fetch. Populated by ChatGPT (Codex
+    /// CLI on PATH) and reused as-is by Cursor (a session cookie already sitting in Keychain);
+    /// the name predates Cursor and is kept for storage/decoding compatibility.
     public var cliDetected: Bool?
     public var consecutiveFailures: Int
     public var nextRetryAt: Date?

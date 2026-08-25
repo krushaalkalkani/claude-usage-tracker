@@ -1,0 +1,16 @@
+{
+  "planInfo": {
+    "planName": "Pro+",
+    "includedAmountCents": 7000,
+    "price": "$60/mo",
+    "billingCycleEnd": "1790224537000",
+    "planOwner": "PLAN_OWNER_STRIPE"
+  },
+  "nextUpgrade": {
+    "tier": "ultra",
+    "name": "Ultra",
+    "includedAmountCents": 40000,
+    "price": "$200/mo",
+    "description": "Get maximum value with 20x usage limits and early access to advanced features."
+  }
+}

@@ -1,15 +1,15 @@
 # Claude Usage Tracker v2
 
-Know how much Claude and ChatGPT Codex/agentic quota you have left, how fast you are burning
-it, whether you will run out before the reset - and what Claude Code is doing right now -
-without leaving the menu bar.
+Know how much Claude, ChatGPT Codex/agentic, and Cursor quota you have left, how fast you are
+burning it, whether you will run out before the reset - and what Claude Code is doing right
+now - without leaving the menu bar.
 
 Two clients, one data model:
 
 | | |
 |---|---|
-| **Native macOS menu bar app** | SwiftUI `MenuBarExtra`, Claude plus ChatGPT Codex/agentic usage, notifications, local history, and Claude Code activity. The main event. |
-| **Web dashboard** | React + Vite. Claude gauges, charts, and CSV export. ChatGPT support is native-only in this release. |
+| **Native macOS menu bar app** | SwiftUI `MenuBarExtra`, Claude plus ChatGPT Codex/agentic and Cursor usage, notifications, local history, and Claude Code activity. The main event. |
+| **Web dashboard** | React + Vite. Claude gauges, charts, and CSV export. ChatGPT and Cursor support is native-only in this release. |
 
 **Claude**
 
@@ -62,15 +62,18 @@ line.
 
 **Usage**
 - 5-hour session and 7-day windows, with time-to-reset and the exact reset clock time.
-- One native popover with a persistent Claude / ChatGPT provider switcher. ChatGPT is labeled
-  **Codex / agentic allowance** because it is not a universal meter for ordinary ChatGPT chats.
+- One native popover with a persistent Claude / ChatGPT / Cursor provider switcher. ChatGPT is
+  labeled **Codex / agentic allowance** because it is not a universal meter for ordinary ChatGPT
+  chats.
 - ChatGPT windows come from the signed-in local Codex CLI, including additional model-specific
   limits and provider-supplied window durations when available.
+- Cursor windows are its included-usage meter and its weekly **Grok Bot** allowance — a
+  Cursor-bundled bot feature, unrelated to any xAI/Grok subscription.
 - **Model-specific limits** — read from the API's `limits[]` array, which is where Anthropic
   actually exposes them. The section is hidden entirely when your account has none.
 - **Extra usage / spend** in real money, respecting the currency exponent the API sends.
-- The menu bar follows the selected provider: `A` for Anthropic/Claude and `O` for
-  OpenAI/ChatGPT. Within that provider it still shows the real limit **closest to its ceiling**,
+- The menu bar follows the selected provider: `A` for Anthropic/Claude, `O` for OpenAI/ChatGPT,
+  `C` for Cursor. Within that provider it still shows the real limit **closest to its ceiling**,
   so `5h = 25%, 7d = 91%` reads as *91%*, tagged `W`, instead of a comfortable-looking 25%.
 
 **Analytics**
@@ -162,6 +165,18 @@ Codex OAuth file without modifying it and make an ephemeral fallback request to
 does not store ChatGPT credentials and does not use an OpenAI API key. ChatGPT subscriptions
 and OpenAI API billing are separate products.
 
+### Cursor
+
+Cursor has no read-only CLI and no API token to read from — its dashboard authenticates purely
+with the browser's session cookie. Settings › Providers › **Connect Cursor** opens a one-time
+embedded `WKWebView` sign-in at `cursor.com/dashboard`; once you're signed in, the app reads
+the resulting `cursor.com` cookies out of that view's own website data store and stores them in
+Keychain. That stored cookie is then sent as a `Cookie:` header on an isolated, ephemeral
+`URLSession` for the three read-only dashboard calls — never through a shared cookie jar, and
+never by reading Safari's, Chrome's, or any other browser's cookies. A rejected or expired
+cookie is reported as "Cursor session expired"; remove it any time from Settings › Providers ›
+**Remove stored session**.
+
 The web dashboard needs a token pasted in (browsers cannot read your keychain). Get one with:
 
 ```bash
@@ -183,14 +198,17 @@ Everything is local. There is no server belonging to this project, no analytics 
 no crash reporter.
 
 **Network:** Claude usage goes to `api.anthropic.com`. ChatGPT/Codex usage normally travels
-through the local Codex app-server; the isolated fallback goes to `chatgpt.com`. There are no
-project analytics or backend destinations.
+through the local Codex app-server; the isolated fallback goes to `chatgpt.com`. Cursor usage
+goes to `cursor.com`'s own dashboard endpoints, authenticated with the session cookie from a
+one-time embedded sign-in. There are no project analytics or backend destinations.
 
 **Credentials:** Claude credentials live in the login keychain or remain managed by Claude
 Code. ChatGPT credentials remain managed by Codex. The tracker never modifies Codex's OAuth
-file or stores ChatGPT credentials. Credentials, account identifiers, emails, prompts,
-responses, and session content are not logged or included in copied debug reports. Network
-fallbacks use an ephemeral `URLSession` with no cache or cookie storage.
+file or stores ChatGPT credentials. The Cursor session cookie is captured once from the app's
+own embedded sign-in — never from another browser's cookie jar — and stored only in Keychain.
+Credentials, account identifiers, emails, prompts, responses, and session content are not
+logged or included in copied debug reports. Network fallbacks, including every Cursor request,
+use an ephemeral `URLSession` with no cache or shared cookie storage.
 
 **Stored locally**, under `~/.claude-usage-tracker/` (mode `700`):
 
@@ -199,6 +217,7 @@ fallbacks use an ephemeral `URLSession` with no cache or cookie storage.
 | `history.json` | provider-qualified usage percentages + timestamps |
 | `last-usage.json` | the most recent Claude snapshot, so a cold launch isn't blank |
 | `last-usage-chatgpt.json` | the most recent ChatGPT snapshot; no raw response or credentials |
+| `last-usage-cursor.json` | the most recent Cursor snapshot; no raw response or session cookie |
 | `sessions/*.json` | Claude Code session metadata, one file per session |
 | `events.jsonl` | the last 200 hook **event names** and timestamps |
 | `activity.json` | a rollup for anything else you want to wire up (status bars, scripts) |
@@ -232,11 +251,13 @@ claude-usage-tracker/
 │   │   └── test-hook.sh              end-to-end hook tests
 │   └── ClaudeUsage/
 │       ├── Models/       provider models, usage parsers, limits, activity, JSONValue
-│       ├── Services/     Anthropic API, Codex app-server/fallback, stores, activity, settings
+│       ├── Services/     Anthropic API, Codex app-server/fallback, Cursor dashboard client,
+│       │                 stores, activity, settings
 │       ├── Analytics/    burn rate, projection, surge detection  (pure)
 │       ├── Notifications/ policy (pure) + UNUserNotificationCenter delivery
-│       ├── App/  Views/  Resources/
-│       └── Tests/        108 tests + sanitized fixtures
+│       ├── App/  Views/  Resources/    (Cursor's WKWebView login sheet lives in App/, since
+│       │                 ClaudeUsageCore stays UI-free)
+│       └── Tests/        126 tests + sanitized fixtures
 └── docs/MENUBAR_V2_PLAN.md           design record + full API field inventory
 ```
 
@@ -289,6 +310,32 @@ transport and defensive parser. Missing or malformed windows stay unknown rather
 becoming 0%. The tracker uses provider-supplied window durations and epoch reset timestamps,
 and never persists the untouched response.
 
+### Cursor
+
+Cursor usage is read from three `POST https://cursor.com/api/dashboard/*` calls
+(`get-plan-info`, `get-current-period-usage`, `get-sand-usage-status`), reverse-engineered from
+the authenticated dashboard's own network traffic.
+
+> **These are internal, undocumented Cursor endpoints**, exactly like the Anthropic and Codex
+> endpoints above. They are not part of any public Cursor API, carry no stability guarantee,
+> and can change or disappear at any time. This project is not affiliated with Cursor.
+
+- Parsed the same defensive way as everything else: a total `JSONValue` tree, optional
+  accessors, missing or renamed fields become a schema warning rather than a crash.
+- `get-current-period-usage`'s `planUsage.totalPercentUsed` is the included-usage percent
+  ("Cursor Models" / "Other Models"); `get-sand-usage-status`'s `usagePercent` is the weekly
+  bot allowance. The tighter of the two becomes the bottleneck, the same way ChatGPT's session
+  and weekly windows compete.
+- **`sand` → "Grok Bot".** Cursor's own API uses the internal codename `sand` for this
+  endpoint; the label shown to you is Cursor's own product-facing name, **Grok Bot** — a
+  Cursor-bundled bot feature, not an xAI/Grok subscription. The tracker does not invent this
+  label; it is what Cursor's dashboard itself calls it.
+- `billingCycleEnd` and similar reset fields arrive as epoch-**millisecond** strings, not the
+  ISO-8601 strings Claude and ChatGPT use; the parser reads both string and numeric shapes.
+- **`get-credit-grants-balance` (the "$X.XX remaining" credits line) is not implemented.** It
+  returned an empty object during reverse-engineering and its real shape is unknown; this is a
+  known gap, not a guess dressed up as data.
+
 ### Known limitations
 
 - **Sessions that started before you installed the hooks are invisible.** Hooks load at
@@ -308,6 +355,10 @@ and never persists the untouched response.
   models and features and does not provide one public universal consumer-chat usage meter.
 - **Codex CLI behavior can change.** If the app-server and isolated fallback both stop matching
   known shapes, the app keeps the last-known-good ChatGPT values and reports a sanitized error.
+- **The Cursor session cookie can expire like any browser session.** When it does, the app
+  reports "Cursor session expired" and you reconnect from Settings › Providers — the tracker
+  never re-authenticates on its own.
+- **Cursor credits (`get-credit-grants-balance`) are not shown.** See "API limitations" above.
 
 ---
 
@@ -322,7 +373,7 @@ npm run build
 # Swift core + app
 cd macos
 swift build                    # library + app
-swift test                     # 108 tests, swift-testing
+swift test                     # 126 tests, swift-testing
 ./scripts/build-app.sh         # → build/ClaudeUsage.app
 
 # Claude Code hook (46 assertions, runs against a throwaway HOME)
@@ -332,7 +383,9 @@ swift test                     # 108 tests, swift-testing
 Test fixtures in `macos/ClaudeUsage/Tests/Fixtures/` are **sanitized** — no real identifiers,
 no tokens. They cover the current shape, the legacy shape, an empty payload, malformed
 entries, a deliberately unknown future shape, ChatGPT session/weekly windows, additional
-model limits, missing windows, malformed entries, auth failures, and process cleanup.
+model limits, missing windows, malformed entries, auth failures, and process cleanup, plus
+Cursor's included-usage and Grok Bot windows, missing/malformed Cursor fields, and a
+rejected-cookie auth failure.
 
 ---
 
@@ -351,6 +404,10 @@ fresh token in Settings.
 Open Codex or run `codex login` yourself, then refresh. The tracker never starts an
 interactive login automatically. Do not paste an OpenAI API key; it does not represent your
 ChatGPT subscription allowance.
+
+**"Cursor login required" or "Cursor session expired"**
+Settings › Providers › Connect Cursor opens the one-time embedded sign-in. The tracker never
+reads Safari's, Chrome's, or any other browser's cookies — only the session from that sign-in.
 
 **"Rate limited"**
 The usage endpoint has its own rate limit, separate from your Claude quota. The app backs off
@@ -395,10 +452,12 @@ rm -rf ~/.claude-usage-tracker
 rm -f ~/.claude-usage-token
 ```
 
-The Claude keychain item is removed from Settings › Providers › Remove stored token, or with:
+The Claude keychain item is removed from Settings › Providers › Remove stored token, and the
+Cursor session cookie from Settings › Providers › Remove stored session, or with:
 
 ```bash
-security delete-generic-password -s "com.krushal.claude-usage-tracker"
+security delete-generic-password -s "com.krushal.claude-usage-tracker" -a "oauth-token"
+security delete-generic-password -s "com.krushal.claude-usage-tracker" -a "cursor-session-cookie"
 ```
 
 Web dashboard state lives in `localStorage` under `claude-auto-tracker`; the Disconnect button
@@ -408,4 +467,4 @@ clears it.
 
 ## License
 
-MIT - see [LICENSE](LICENSE). Not affiliated with or endorsed by Anthropic or OpenAI.
+MIT - see [LICENSE](LICENSE). Not affiliated with or endorsed by Anthropic, OpenAI, or Cursor.

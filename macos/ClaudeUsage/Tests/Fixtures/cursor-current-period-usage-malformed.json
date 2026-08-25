@@ -1,0 +1,10 @@
+{
+  "billingCycleStart": "1787546137000",
+  "billingCycleEnd": "not-a-number",
+  "planUsage": {
+    "remaining": 4900,
+    "limit": 7000,
+    "totalPercentUsed": "-15"
+  },
+  "enabled": true
+}

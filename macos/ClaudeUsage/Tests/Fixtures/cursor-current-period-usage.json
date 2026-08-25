@@ -1,0 +1,18 @@
+{
+  "billingCycleStart": "1787546137000",
+  "billingCycleEnd": "1790224537000",
+  "planUsage": {
+    "remaining": 4900,
+    "limit": 7000,
+    "remainingBonus": false,
+    "bonusTooltip": "We work with model providers to give you free usage beyond what you've purchased. Amounts may vary.",
+    "autoPercentUsed": 30,
+    "apiPercentUsed": 0,
+    "totalPercentUsed": 30
+  },
+  "spendLimitUsage": { "limitType": "user" },
+  "displayThreshold": 200,
+  "enabled": true,
+  "displayMessage": "You've used 30% of your included usage",
+  "autoBucketModels": ["default", "composer-1.5"]
+}

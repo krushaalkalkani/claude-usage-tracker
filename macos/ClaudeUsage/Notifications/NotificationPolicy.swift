@@ -399,7 +399,8 @@ public enum NotificationPolicy {
         let providerScope = context.provider.rawValue
 
         switch error {
-        case .unauthorized, .forbidden, .missingToken, .codexAuthenticationRequired, .cliNotFound:
+        case .unauthorized, .forbidden, .missingToken, .codexAuthenticationRequired, .cliNotFound,
+             .missingCursorSession:
             guard allowed(
                 .apiAuth, ledger: ledger, now: context.now, scope: providerScope
             ) else { return [] }

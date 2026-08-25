@@ -1,0 +1,19 @@
+{
+  "currentPeriodStart": "2026-08-24T19:28:09.358Z",
+  "nextResetTimestampUtc": "2026-08-31T19:28:09.358Z",
+  "usagePercent": 23.727263,
+  "hasAvailableUsage": true,
+  "hasNonZeroIncludedLimit": true,
+  "upgradeRecommendation": {
+    "cta": { "label": "Upgrade to Ultra", "url": { "url": "https://cursor.com/dashboard/spending" } },
+    "supportingText": "Get $1,000 of Grok Bot usage each week with Ultra",
+    "kind": "upgrade"
+  },
+  "onDemandRecommendations": [],
+  "onDemandSettings": {
+    "visible": true,
+    "eligible": true,
+    "dashboardUrl": "https://cursor.com/dashboard/spending"
+  },
+  "grokPlanLabel": "Grok Bot Plan"
+}
