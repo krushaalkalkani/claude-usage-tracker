@@ -21,8 +21,10 @@ public struct CursorParseResult: Sendable, Equatable {
 public enum CursorUsageParser {
     /// - Parameters:
     ///   - planInfo: `POST /api/dashboard/get-plan-info` body, for the plan label only.
-    ///   - currentPeriodUsage: `POST /api/dashboard/get-current-period-usage` body — the
-    ///     included-usage ("Cursor Models") meter.
+    ///   - currentPeriodUsage: `POST /api/dashboard/get-current-period-usage` body — the two
+    ///     included-usage meters, "Cursor Models" (the `auto` bucket) and "Other Models" (the
+    ///     `api` bucket), which the dashboard shows and tracks separately even though they draw
+    ///     from the same monthly pool.
     ///   - sandUsageStatus: `POST /api/dashboard/get-sand-usage-status` body — the weekly
     ///     "Grok Bot" meter. `sand` is Cursor's internal codename; the label shown to the user
     ///     is the product-facing "Grok Bot", not the codename.
@@ -41,9 +43,7 @@ public enum CursorUsageParser {
         var limits: [LimitWindow] = []
 
         if let currentPeriodUsage {
-            if let window = parseIncludedUsage(currentPeriodUsage, warnings: &warnings) {
-                limits.append(window)
-            }
+            limits.append(contentsOf: parseIncludedUsage(currentPeriodUsage, warnings: &warnings))
         } else {
             warnings.append("get-current-period-usage response missing")
         }
@@ -84,46 +84,77 @@ public enum CursorUsageParser {
 
     // MARK: - Included usage ("Cursor Models" / "Other Models")
 
+    /// The dashboard shows these as two separate meters - "Cursor Models" (the `auto` bucket:
+    /// Cursor's own Grok and Composer models) and "Other Models" (the `api` bucket: everything
+    /// else, billed against the same included pool) - not the single blended total this parser
+    /// used to collapse them into.
     private static func parseIncludedUsage(
         _ root: JSONValue, warnings: inout [String]
-    ) -> LimitWindow? {
+    ) -> [LimitWindow] {
         guard let planUsage = root["planUsage"] else {
             warnings.append("get-current-period-usage missing planUsage")
-            return nil
+            return []
         }
-        guard let rawPercent = planUsage["totalPercentUsed"]?.doubleValue
-            ?? fallbackPercent(remaining: planUsage["remaining"]?.doubleValue,
-                                limit: planUsage["limit"]?.doubleValue)
-        else {
-            warnings.append("get-current-period-usage planUsage missing totalPercentUsed")
-            return nil
-        }
-        guard rawPercent.isFinite else {
-            warnings.append("get-current-period-usage totalPercentUsed was not a number")
-            return nil
-        }
-
-        let safePercent = clampPercent(rawPercent)
         let resetsAt = epochMillisDate(root["billingCycleEnd"])
+        // The payload carries both ends of the billing cycle, so the window's real length is
+        // known rather than guessed. Without it these windows fell into the "unknown length"
+        // path: no pace bar, no window-start cutoff for the burn rate, and a hero eyebrow
+        // that invented a period out of the internal `kind` string.
+        let duration = billingCycleLength(
+            start: epochMillisDate(root["billingCycleStart"]), end: resetsAt
+        )
 
+        var windows: [LimitWindow] = []
+        if let window = includedUsageWindow(
+            planUsage["autoPercentUsed"]?.doubleValue,
+            id: "cursor_models", kind: "cursor_models_included",
+            title: "Cursor Models", resetsAt: resetsAt, duration: duration
+        ) {
+            windows.append(window)
+        } else {
+            warnings.append("get-current-period-usage planUsage missing autoPercentUsed")
+        }
+        if let window = includedUsageWindow(
+            planUsage["apiPercentUsed"]?.doubleValue,
+            id: "other_models", kind: "cursor_other_models_included",
+            title: "Other Models", resetsAt: resetsAt, duration: duration
+        ) {
+            windows.append(window)
+        } else {
+            warnings.append("get-current-period-usage planUsage missing apiPercentUsed")
+        }
+        return windows
+    }
+
+    /// Length of the billing cycle, rejecting anything that is not plausibly a monthly-ish
+    /// period — a start after its end, or a span so long it can only be a bad timestamp.
+    private static func billingCycleLength(start: Date?, end: Date?) -> TimeInterval? {
+        guard let start, let end else { return nil }
+        let span = end.timeIntervalSince(start)
+        guard span >= 86_400, span <= 400 * 86_400 else { return nil }
+        return span
+    }
+
+    private static func includedUsageWindow(
+        _ rawPercent: Double?, id: String, kind: String, title: String,
+        resetsAt: Date?, duration: TimeInterval?
+    ) -> LimitWindow? {
+        guard let rawPercent, rawPercent.isFinite else { return nil }
+        let safePercent = clampPercent(rawPercent)
         return LimitWindow(
-            id: "included_usage",
-            kind: "cursor_included_usage",
+            id: id,
+            kind: kind,
             group: .other,
-            title: "Included usage",
-            shortTitle: "Included usage",
+            title: title,
+            shortTitle: title,
             percent: safePercent,
             resetsAt: resetsAt,
             severity: Severity.from(percent: safePercent),
             isActive: false,
             provider: .cursor,
-            rawPercent: safePercent == rawPercent ? nil : rawPercent
+            rawPercent: safePercent == rawPercent ? nil : rawPercent,
+            windowDuration: duration
         )
-    }
-
-    private static func fallbackPercent(remaining: Double?, limit: Double?) -> Double? {
-        guard let remaining, let limit, limit > 0 else { return nil }
-        return max(0, (1 - remaining / limit) * 100)
     }
 
     // MARK: - Grok Bot (internal codename "sand")
@@ -149,6 +180,10 @@ public enum CursorUsageParser {
             resetsAt: resetsAt,
             severity: Severity.from(percent: safePercent),
             isActive: false,
+            // Named like Claude's "Cowork · 7-day": without this the hero card falls through to
+            // the generic `.weekly` label and reads "Weekly · 7-day", never naming Grok Bot at
+            // all - which matters here because Cursor has more than one weekly-ish meter.
+            surface: "Grok Bot",
             provider: .cursor,
             rawPercent: safePercent == rawPercent ? nil : rawPercent
         )

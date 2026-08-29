@@ -18,6 +18,9 @@ struct SparklineSection: View {
                     .font(DS.eyebrow)
                     .kerning(DS.eyebrowKerning)
                     .foregroundStyle(DS.inkFaint)
+                Text("% left")
+                    .font(DS.label(9.5))
+                    .foregroundStyle(DS.inkFaint)
                 Spacer(minLength: 8)
                 // Plain text toggles rather than a segmented control: the control's own
                 // chrome was heavier than the chart it filtered.
@@ -62,7 +65,10 @@ struct SparklineSection: View {
         // view that redraws every second.
         return samples.compactMap { s in
             guard s.t >= cutoff, let value = s.limits[limitID] else { return nil }
-            return (s.t, value)
+            // Plotted as headroom, like every other figure in the panel: the line falls as
+            // you spend and jumps back up at a reset. Samples are stored as utilisation, so
+            // the flip happens here rather than in history.
+            return (s.t, max(0, 100 - value))
         }
     }
 }
@@ -115,6 +121,6 @@ private struct Sparkline: View {
                 with: .color(color)
             )
         }
-        .accessibilityLabel("Usage trend, \(points.count) samples")
+        .accessibilityLabel("Remaining allowance trend, \(points.count) samples")
     }
 }

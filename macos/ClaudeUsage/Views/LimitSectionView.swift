@@ -17,7 +17,9 @@ private func resetLabel(_ resetsAt: Date, now: Date) -> String {
 struct HeroLimitView: View {
     let limit: LimitWindow
     let projection: UsageProjection?
-    let isTightest: Bool
+    /// Why this window got the hero slot, or nil when it is the only one reported and there
+    /// was nothing to have chosen it over.
+    let reason: LimitConstraint.Reason?
     /// Off by default for the same reason as the hero: one provider per tab, so the tab
     /// itself is the label.
     var showsProvider: Bool = false
@@ -33,8 +35,12 @@ struct HeroLimitView: View {
                     .kerning(DS.eyebrowKerning)
                     .foregroundStyle(DS.inkFaint)
                 Spacer(minLength: 0)
-                if isTightest {
-                    Chip(text: "tightest", color: DS.accent(limit.severity))
+                if let reason {
+                    // "Tightest" was the only word this chip ever said, which made it
+                    // decoration. Naming the rule that actually fired — spent, running out
+                    // first, or merely closest to its ceiling — is what tells you whether the
+                    // hero is a warning or just a ranking.
+                    Chip(text: reason.chipText, color: DS.accent(limit.severity))
                 }
             }
 
@@ -106,23 +112,29 @@ struct HeroLimitView: View {
     }
 
     private var basePeriodLabel: String {
-        let period = durationLabel
-        if let model = limit.modelName { return "\(model) · \(period)" }
-        if let surface = limit.surface { return "\(surface) · \(period)" }
+        if let scoped = limit.modelName ?? limit.surface {
+            guard let period = durationLabel else { return scoped }
+            return "\(scoped) · \(period)"
+        }
         switch limit.group {
-        case .session: return "Session · \(period)"
-        case .weekly: return "Weekly · \(period)"
+        case .session: return "Session · \(durationLabel ?? "5-hour")"
+        case .weekly: return "Weekly · \(durationLabel ?? "7-day")"
         case .other:
-            return limit.shortTitle == limit.kind ? period : "\(limit.shortTitle) · \(period)"
+            // A window whose length the provider never told us is named and left at that.
+            // Deriving a period from the raw `kind` produced "Cursor Models · cursor models
+            // included" — the same words twice, one of them an internal identifier.
+            guard let period = durationLabel else { return limit.shortTitle }
+            return "\(limit.shortTitle) · \(period)"
         }
     }
 
-    private var durationLabel: String {
+    /// Nil when the provider said nothing about how long the window is.
+    private var durationLabel: String? {
         guard let seconds = limit.windowDuration, seconds > 0 else {
             switch limit.group {
             case .session: return "5-hour"
             case .weekly: return "7-day"
-            case .other: return limit.kind.replacingOccurrences(of: "_", with: " ")
+            case .other: return nil
             }
         }
         if seconds >= 86_400, seconds.truncatingRemainder(dividingBy: 86_400) == 0 {
@@ -170,8 +182,12 @@ struct CompactLimitRow: View {
 
                 Spacer(minLength: DS.Space.s)
 
+                // Lit ticks are what you still have, draining right to left as you spend —
+                // the same direction as the number beside it, and the same reading as a
+                // battery. Filling by utilisation instead meant the meter grew while the
+                // figure it sat next to shrank.
                 TickMeter(
-                    fraction: limit.percent / 100,
+                    fraction: limit.remainingPercent / 100,
                     color: DS.accent(limit.severity),
                     tickCount: 16,
                     height: 9,
@@ -179,7 +195,7 @@ struct CompactLimitRow: View {
                 )
                 .frame(width: 78)
 
-                Text("\(Int(limit.percent.rounded()))%")
+                Text("\(Int(limit.remainingPercent.rounded()))%")
                     .font(DS.figure(11.5, weight: .semibold))
                     .foregroundStyle(limit.severity == .normal ? DS.ink : DS.accent(limit.severity))
                     .frame(width: 38, alignment: .trailing)
@@ -200,7 +216,9 @@ struct CompactLimitRow: View {
         switch limit.group {
         case .session: return "Session"
         case .weekly: return "Weekly"
-        case .other: return limit.kind.replacingOccurrences(of: "_", with: " ").capitalized
+        // The provider's own name for the window, not a title-cased rendering of its
+        // internal key ("Cursor Models Included"). Parsers set `shortTitle` for exactly this.
+        case .other: return limit.shortTitle
         }
     }
 

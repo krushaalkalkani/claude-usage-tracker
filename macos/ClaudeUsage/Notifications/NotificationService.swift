@@ -1,4 +1,5 @@
 import Foundation
+import UniformTypeIdentifiers
 import UserNotifications
 
 /// Delivers what `NotificationPolicy` decided.
@@ -15,10 +16,15 @@ public final class NotificationService: @unchecked Sendable {
         /// No bundle identifier — `UNUserNotificationCenter` cannot be used at all.
         case unavailable
 
+        /// `.denied` is not only "the user said no". An ad-hoc-signed build is refused by
+        /// the system outright — requestAuthorization fails with "Notifications are not
+        /// allowed for this application" — and lands here too. Either way the consequence is
+        /// the same and worth stating, because the fallback banner looks like it came from
+        /// Script Editor rather than from this app.
         public var label: String {
             switch self {
             case .authorized: return "Allowed"
-            case .denied: return "Denied in System Settings"
+            case .denied: return "Not allowed — using the plain fallback banner"
             case .notDetermined: return "Not requested yet"
             case .unavailable: return "Unavailable (app not bundled)"
             }
@@ -92,9 +98,13 @@ public final class NotificationService: @unchecked Sendable {
         if let center, currentAvailability == .authorized {
             let content = UNMutableNotificationContent()
             content.title = note.title
+            if let subtitle = note.subtitle { content.subtitle = subtitle }
             content.body = note.body
             content.sound = note.severity == .critical ? .defaultCritical : .default
             content.interruptionLevel = note.severity == .critical ? .timeSensitive : .active
+            if let attachment = makeAttachment(for: note) {
+                content.attachments = [attachment]
+            }
             // A stable identifier means a repeat of the same alert replaces rather than
             // stacks in Notification Center.
             let request = UNNotificationRequest(
@@ -110,12 +120,38 @@ public final class NotificationService: @unchecked Sendable {
         if fallbackEnabled { deliverViaFallback(note) }
     }
 
+    /// Renders the notification's thumbnail to a temp PNG and wraps it for UserNotifications.
+    ///
+    /// The system *moves* the file into its own store on success, so nothing needs cleaning
+    /// up afterwards — but it leaves the file where it is on failure, hence the unlink.
+    /// Artwork is never load-bearing: if any of this fails the notification still goes out,
+    /// just without a picture.
+    private func makeAttachment(for note: PendingNotification) -> UNNotificationAttachment? {
+        guard let artwork = note.artwork,
+              let url = NotificationArtworkRenderer.write(artwork)
+        else { return nil }
+        do {
+            return try UNNotificationAttachment(
+                identifier: "artwork", url: url,
+                options: [UNNotificationAttachmentOptionsTypeHintKey: UTType.png.identifier]
+            )
+        } catch {
+            try? FileManager.default.removeItem(at: url)
+            return nil
+        }
+    }
+
     /// `display notification` via osascript. Only reached when the modern API is unusable.
     private func deliverViaFallback(_ note: PendingNotification) {
-        let script = """
+        var script = """
         display notification \(appleScriptString(note.body)) \
         with title \(appleScriptString(note.title))
         """
+        // No attachment support here, but the subtitle survives — worth keeping, since this
+        // path is what unsigned development builds actually see.
+        if let subtitle = note.subtitle {
+            script += " subtitle \(appleScriptString(subtitle))"
+        }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         process.arguments = ["-e", script]

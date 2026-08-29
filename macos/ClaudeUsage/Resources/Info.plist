@@ -6,6 +6,8 @@
     <string>en</string>
     <key>CFBundleExecutable</key>
     <string>ClaudeUsage</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>com.krushal.claude-usage-tracker</string>
     <key>CFBundleInfoDictionaryVersion</key>

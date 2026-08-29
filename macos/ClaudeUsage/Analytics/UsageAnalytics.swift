@@ -479,10 +479,8 @@ extension UsageAnalytics {
         case .stop:
             let affordable = rate.perHour > 0 ? headroom / rate.perHour * 60 : 0
             detail = "Only about \(Int(affordable.rounded()))m of runway at \(Format.rate(rate.perHour))"
-        case .tight:
-            detail = "Needs ~\(Int(effectiveCost.rounded()))% of the \(Int(headroom.rounded()))% left"
-        case .go:
-            detail = "Needs ~\(Int(effectiveCost.rounded()))% of the \(Int(headroom.rounded()))% left"
+        case .tight, .go:
+            detail = "Needs ~\(Format.percentAtLeast(effectiveCost)) of the \(Format.percent(headroom)) left"
         case .unknown:
             detail = ""
         }

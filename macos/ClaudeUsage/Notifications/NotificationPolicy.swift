@@ -32,9 +32,16 @@ public enum NotificationCategory: String, Sendable, Codable, CaseIterable {
 public struct PendingNotification: Sendable, Equatable, Identifiable {
     public let id: String
     public let category: NotificationCategory
+    /// Names the thing the alert is about, and nothing else: "Cursor · Grok Bot". Short
+    /// enough that macOS does not wrap it onto a second line.
     public let title: String
+    /// The headline — what happened. macOS gives it its own bold line under the title.
+    public let subtitle: String?
+    /// The numbers behind the headline.
     public let body: String
     public let severity: Severity
+    /// The thumbnail. Optional so a category with nothing to picture simply shows the app icon.
+    public let artwork: NotificationArtwork?
     /// Narrows this notification's cooldown to a provider or Claude Code session id so
     /// unrelated sources never silence each other.
     public let cooldownScope: String?
@@ -43,15 +50,19 @@ public struct PendingNotification: Sendable, Equatable, Identifiable {
         id: String,
         category: NotificationCategory,
         title: String,
+        subtitle: String? = nil,
         body: String,
         severity: Severity,
+        artwork: NotificationArtwork? = nil,
         cooldownScope: String? = nil
     ) {
         self.id = id
         self.category = category
         self.title = title
+        self.subtitle = subtitle
         self.body = body
         self.severity = severity
+        self.artwork = artwork
         self.cooldownScope = cooldownScope
     }
 }
@@ -245,6 +256,12 @@ public enum NotificationPolicy {
 
         for limit in snapshot.limits {
             let ledgerLimitID = "\(context.provider.rawValue)#\(limit.id)"
+            let projection = context.projections[limit.id]
+            // A rate is only worth putting in front of the user when the fit is grounded.
+            // A two-sample guess printed as "1.8%/h" reads far more certain than it is.
+            let pace: BurnRate? = projection?.burnRate.flatMap {
+                $0.sampleCount >= 4 && $0.fitQuality >= 0.5 && $0.isMeaningful ? $0 : nil
+            }
             // Bucketed to the minute. The reset instant must never be used at full precision
             // in a dedup key: the API jitters its fractional seconds on every response, so a
             // key built from the raw value is unique every poll and dedups nothing.
@@ -274,13 +291,19 @@ public enum NotificationPolicy {
                 ledger.firedKeys = ledger.firedKeys.filter { !$0.hasPrefix("\(ledgerLimitID)|") }
 
                 if context.settings.notifyOnReset, let previousPercent, previousPercent >= 25 {
+                    var body = "Back to \(Format.percent(limit.remainingPercent)) left, from \(Format.percent(max(0, 100 - previousPercent)))"
+                    if let until = limit.timeUntilReset(now: context.now) {
+                        body += " · next reset in \(Format.duration(until))"
+                    }
                     out.append(
                         PendingNotification(
                             id: "reset|\(ledgerLimitID)|\(windowKey)",
                             category: .quotaReset,
-                            title: "\(context.provider.displayName) · \(limit.shortTitle) quota reset",
-                            body: "Was \(Format.percent(previousPercent)) — now \(Format.percent(limit.percent)).",
+                            title: "\(context.provider.displayName) · \(limit.shortTitle)",
+                            subtitle: "Quota reset — a full window again",
+                            body: body,
                             severity: .normal,
+                            artwork: .remaining(of: limit, tint: .normal),
                             cooldownScope: context.provider.rawValue
                         )
                     )
@@ -301,17 +324,17 @@ public enum NotificationPolicy {
                 guard !higherPending else { continue }
 
                 let severity: Severity = threshold >= 95 ? .critical : threshold >= 75 ? .warning : .normal
-                var body = "\(Format.percent(limit.remainingPercent)) remaining"
-                if let until = limit.timeUntilReset(now: context.now) {
-                    body += " · resets in \(Format.duration(until))"
-                }
                 out.append(
                     PendingNotification(
                         id: key,
                         category: .usageThreshold,
-                        title: "\(context.provider.displayName) · \(limit.shortTitle) at \(threshold)%",
-                        body: body,
+                        // "at 90%" alone is ambiguous next to a body that says "10% left"
+                        // and a panel headlined "10%". The word "used" costs four characters
+                        // and settles it, while still naming the threshold that fired.
+                        title: "\(context.provider.displayName) · \(limit.shortTitle) at \(threshold)% used",
+                        body: statusLine(limit, pace: pace, now: context.now),
                         severity: severity,
+                        artwork: .remaining(of: limit, tint: severity),
                         cooldownScope: context.provider.rawValue
                     )
                 )
@@ -319,23 +342,32 @@ public enum NotificationPolicy {
 
             // Projected to run out before the window resets.
             if context.settings.notifyOnProjectedOverrun,
-               let projection = context.projections[limit.id],
+               let projection,
                projection.willExhaustBeforeReset,
                let eta = projection.timeToExhaustion,
-               let rate = projection.burnRate,
                // Only when the estimate is grounded: enough samples and a coherent trend.
-               rate.sampleCount >= 4, rate.fitQuality >= 0.5, limit.percent < 100,
+               let rate = pace, limit.percent < 100,
                allowed(
                    .projectedOverrun, ledger: ledger, now: context.now,
                    scope: context.provider.rawValue
                ) {
+                // The shortfall is the actionable number — "before the reset" does not say
+                // whether that means five minutes early or two days early.
+                var body = "\(Format.percent(limit.remainingPercent)) left at \(Format.rate(rate.perHour))"
+                if let until = projection.timeUntilReset, until > eta {
+                    body += " — that is \(Format.duration(until - eta)) short of the reset."
+                } else {
+                    body += " — gone before the window resets."
+                }
                 out.append(
                     PendingNotification(
                         id: "projected|\(ledgerLimitID)|\(windowKey)",
                         category: .projectedOverrun,
-                        title: "\(context.provider.displayName) · \(limit.shortTitle) projected to run out",
-                        body: "At \(Format.rate(rate.perHour)) you hit 100% in \(Format.duration(eta)), before the reset.",
+                        title: "\(context.provider.displayName) · \(limit.shortTitle)",
+                        subtitle: "Empty in \(Format.duration(eta)) at this pace",
+                        body: body,
                         severity: .warning,
+                        artwork: .remaining(of: limit, tint: .warning),
                         cooldownScope: context.provider.rawValue
                     )
                 )
@@ -353,9 +385,11 @@ public enum NotificationPolicy {
                     PendingNotification(
                         id: "surge|\(ledgerLimitID)|\(windowKey)",
                         category: .usageSurge,
-                        title: "\(context.provider.displayName) · \(limit.shortTitle) climbing fast",
-                        body: "Now \(Format.percent(limit.percent)) and accelerating.",
+                        title: "\(context.provider.displayName) · \(limit.shortTitle)",
+                        subtitle: "Climbing fast — \(Format.percent(limit.remainingPercent)) left",
+                        body: statusLine(limit, pace: pace, now: context.now),
                         severity: .warning,
+                        artwork: .remaining(of: limit, tint: .warning),
                         cooldownScope: context.provider.rawValue
                     )
                 )
@@ -365,6 +399,18 @@ public enum NotificationPolicy {
             ledger.lastPercent[ledgerLimitID] = limit.percent
         }
         return out
+    }
+
+    /// One shape for every usage notification's detail line: what is left, how fast it is
+    /// going, when the window turns over. The reader learns the format once and can then read
+    /// any of these alerts at a glance instead of parsing a fresh sentence each time.
+    public static func statusLine(_ limit: LimitWindow, pace: BurnRate?, now: Date) -> String {
+        var parts = ["\(Format.percent(limit.remainingPercent)) left"]
+        if let pace { parts.append(Format.rate(pace.perHour)) }
+        if let until = limit.timeUntilReset(now: now) {
+            parts.append("resets in \(Format.duration(until))")
+        }
+        return parts.joined(separator: " · ")
     }
 
     /// Keeps window bookkeeping current while notifications are switched off, so turning them
@@ -400,7 +446,7 @@ public enum NotificationPolicy {
 
         switch error {
         case .unauthorized, .forbidden, .missingToken, .codexAuthenticationRequired, .cliNotFound,
-             .missingCursorSession:
+             .missingCursorSession, .missingGrokSession:
             guard allowed(
                 .apiAuth, ledger: ledger, now: context.now, scope: providerScope
             ) else { return [] }
@@ -408,9 +454,11 @@ public enum NotificationPolicy {
                 PendingNotification(
                     id: "api-auth|\(providerScope)",
                     category: .apiAuth,
-                    title: "\(context.provider.displayName) · \(error.title(for: context.provider))",
+                    title: context.provider.displayName,
+                    subtitle: error.title(for: context.provider),
                     body: error.detail(for: context.provider),
                     severity: .warning,
+                    artwork: NotificationArtwork(tint: .warning, ring: nil, caption: "!"),
                     cooldownScope: providerScope
                 )
             ]
@@ -423,9 +471,11 @@ public enum NotificationPolicy {
                 PendingNotification(
                     id: "api-rate-limited|\(providerScope)",
                     category: .apiRateLimited,
-                    title: "\(context.provider.displayName) · Usage service rate limited",
+                    title: context.provider.displayName,
+                    subtitle: "Usage service rate limited",
                     body: error.detail(for: context.provider),
                     severity: .normal,
+                    artwork: NotificationArtwork(tint: .warning, ring: nil, caption: "!"),
                     cooldownScope: providerScope
                 )
             ]
@@ -441,9 +491,11 @@ public enum NotificationPolicy {
                 PendingNotification(
                     id: "api-unavailable|\(providerScope)",
                     category: .apiUnavailable,
-                    title: "\(context.provider.displayName) · Usage data unavailable",
-                    body: "\(error.title(for: context.provider)). Showing the last known values.",
+                    title: context.provider.displayName,
+                    subtitle: "Usage data unavailable",
+                    body: "\(error.title(for: context.provider)). Still showing the last known values.",
                     severity: .normal,
+                    artwork: NotificationArtwork(tint: .warning, ring: nil, caption: "!"),
                     cooldownScope: providerScope
                 )
             ]
@@ -486,6 +538,13 @@ public enum NotificationPolicy {
                             title: "Claude Code · \(name)",
                             body: reason,
                             severity: session.status == .permissionRequired ? .warning : .normal,
+                            // "?" rather than "!": this is Claude asking the user something,
+                            // not something going wrong.
+                            artwork: NotificationArtwork(
+                                tint: session.status == .permissionRequired ? .warning : .normal,
+                                ring: nil,
+                                caption: "?"
+                            ),
                             cooldownScope: session.sessionId
                         )
                     )
@@ -508,9 +567,13 @@ public enum NotificationPolicy {
                         PendingNotification(
                             id: key,
                             category: .claudeCompleted,
-                            title: "Claude Code finished · \(name)",
+                            // The old title said "finished" and so did the body. One of them
+                            // was doing no work.
+                            title: "Claude Code · \(name)",
+                            subtitle: "Done",
                             body: body,
                             severity: .normal,
+                            artwork: NotificationArtwork(tint: .normal, ring: nil, caption: "✓"),
                             cooldownScope: session.sessionId
                         )
                     )
@@ -535,11 +598,11 @@ public enum NotificationPolicy {
                         PendingNotification(
                             id: key,
                             category: .claudeError,
-                            title: session.status == .rateLimited
-                                ? "Claude Code rate limited · \(name)"
-                                : "Claude Code error · \(name)",
+                            title: "Claude Code · \(name)",
+                            subtitle: session.status == .rateLimited ? "Rate limited" : "Error",
                             body: session.lastError.map { "Last: \($0)" } ?? session.status.displayName,
                             severity: .warning,
+                            artwork: NotificationArtwork(tint: .warning, ring: nil, caption: "!"),
                             cooldownScope: session.sessionId
                         )
                     )
@@ -578,6 +641,15 @@ public enum NotificationPolicy {
 public enum Format {
     public static func percent(_ value: Double) -> String {
         "\(Int(value.rounded()))%"
+    }
+
+    /// Like `percent`, but never rounds a real cost down to a free-sounding "0%".
+    ///
+    /// "Needs ~0% of the 68% left" was the go/no-go check's answer to any task costing under
+    /// half a point, which reads as "this is free" rather than "this is small".
+    public static func percentAtLeast(_ value: Double) -> String {
+        if value > 0, value < 0.5 { return "<1%" }
+        return percent(value)
     }
 
     public static func rate(_ perHour: Double) -> String {

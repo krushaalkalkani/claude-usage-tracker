@@ -25,6 +25,8 @@ public enum AppPaths {
             return root.appendingPathComponent("last-usage-chatgpt.json")
         case .cursor:
             return root.appendingPathComponent("last-usage-cursor.json")
+        case .grok:
+            return root.appendingPathComponent("last-usage-grok.json")
         }
     }
 

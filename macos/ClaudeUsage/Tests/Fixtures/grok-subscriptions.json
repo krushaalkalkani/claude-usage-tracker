@@ -1,0 +1,17 @@
+{
+  "subscriptions": [
+    {
+      "xaiUserId": "redacted",
+      "tier": "SUBSCRIPTION_TIER_X_PREMIUM_PLUS",
+      "status": "SUBSCRIPTION_STATUS_EXPIRED",
+      "billingPeriodEnd": "2026-01-01T00:00:00Z"
+    },
+    {
+      "xaiUserId": "redacted",
+      "tier": "SUBSCRIPTION_TIER_GROK_PRO",
+      "status": "SUBSCRIPTION_STATUS_ACTIVE",
+      "x": true,
+      "billingPeriodEnd": "2026-09-25T09:50:00Z"
+    }
+  ]
+}

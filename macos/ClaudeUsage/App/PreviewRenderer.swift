@@ -28,7 +28,62 @@ enum PreviewRenderer {
                 renderSettings(pane, dark: dark, into: outDir)
             }
         }
+        renderStatusItem(into: outDir)
         return true
+    }
+
+    /// The status-item glyph at the sizes it is actually drawn, blown up so the shapes are
+    /// reviewable. It had no preview at all, which is why a hardcoded two-provider icon
+    /// survived the arrival of a third and a fourth.
+    @MainActor
+    private static func renderStatusItem(into dir: URL) {
+        // One row per style; within a row, a full account down to an empty one, then the
+        // multi-provider case and the no-data case.
+        let cases: [(String, MenuBarIcon.Input)] = [
+            ("full", .init(levels: [1.0], labels: ["Claude"])),
+            ("half", .init(levels: [0.5], severity: .warning, labels: ["Claude"])),
+            ("low", .init(levels: [0.08], severity: .critical, labels: ["Claude"])),
+            ("empty", .init(levels: [0.0], severity: .critical, labels: ["Claude"])),
+            ("four", .init(
+                levels: [0.47, 0.36, 0.38, nil],
+                labels: UsageProvider.allCases.map(\.displayName)
+            )),
+            ("attention", .init(levels: [0.62], attention: true, labels: ["Claude"])),
+            ("unknown", .init(levels: [nil], labels: ["Claude"])),
+        ]
+        let scale: CGFloat = 6
+        let rowH = 16 * scale + 8
+
+        for style in MenuBarIcon.Style.allCases {
+            var x: CGFloat = 4
+            var images: [(NSImage, CGFloat)] = []
+            for (_, input) in cases {
+                let image = MenuBarIcon.image(style: style, input)
+                images.append((image, x))
+                x += image.size.width * scale + 16
+            }
+            let sheet = NSImage(size: NSSize(width: x, height: rowH), flipped: false) { _ in
+                // A light menu bar: template glyphs are drawn as black with real alpha, so
+                // they read directly here without any tinting pass. (Tinting them would mean
+                // compositing over this backdrop, which paints the whole box, not the glyph.)
+                NSColor(hex: 0xF3F3F5).setFill()
+                NSRect(x: 0, y: 0, width: x, height: rowH).fill()
+                for (image, ox) in images {
+                    image.draw(in: NSRect(
+                        x: ox, y: 4,
+                        width: image.size.width * scale, height: 16 * scale
+                    ))
+                }
+                return true
+            }
+            guard let tiff = sheet.tiffRepresentation,
+                  let rep = NSBitmapImageRep(data: tiff),
+                  let png = rep.representation(using: .png, properties: [:])
+            else { continue }
+            let url = dir.appendingPathComponent("statusitem-\(style.rawValue).png")
+            try? png.write(to: url)
+            print(url.path)
+        }
     }
 
     @MainActor
@@ -137,7 +192,147 @@ enum PreviewRenderer {
                 )
                 return m
             },
+            // Cursor had no scenario of its own, which is how a hero eyebrow reading
+            // "Cursor Models · cursor models included" shipped unnoticed: every window it
+            // reports is `.other`, a group no other provider uses.
+            Scenario(name: "cursor-healthy") { cursorModel() },
+            Scenario(name: "cursor-included-spent") {
+                cursorModel(cursorModels: 100, otherModels: 46, grokBot: 61)
+            },
+            Scenario(name: "grok-healthy") { grokModel(percent: 38) },
+            Scenario(name: "grok-exhausted") { grokModel(percent: 100) },
+            Scenario(name: "grok-disconnected") {
+                let m = model(percent: 53, weekly: 32, model: 18, burning: 2)
+                m.previewApply(provider: .grok, error: .missingGrokSession, cliDetected: false)
+                return m
+            },
+            // Every tab populated at once: the case that decides whether four tabs fit.
+            Scenario(name: "all-providers") {
+                let m = model(percent: 53, weekly: 32, model: 18, burning: 2)
+                let chatgpt = chatGPTFixture(session: 24, weekly: 64, additional: 31)
+                m.previewApply(
+                    snapshot: chatgpt.snapshot, samples: chatgpt.samples, plan: "Pro"
+                )
+                m.previewApply(snapshot: cursorFixture(), plan: "Pro+")
+                let grok = grokFixture(percent: 100)
+                m.previewApply(
+                    snapshot: grok.snapshot, samples: grok.samples,
+                    plan: "SuperGrok", select: true
+                )
+                return m
+            },
         ]
+    }
+
+    @MainActor
+    private static func cursorModel(
+        cursorModels: Double = 62, otherModels: Double = 8, grokBot: Double = 24
+    ) -> AppModel {
+        let snapshot = cursorFixture(
+            cursorModels: cursorModels, otherModels: otherModels, grokBot: grokBot
+        )
+        return AppModel.preview(
+            snapshot: snapshot,
+            activity: .unavailable,
+            samples: [],
+            plan: "Pro+",
+            now: snapshot.fetchedAt
+        )
+    }
+
+    @MainActor
+    private static func grokModel(percent: Double) -> AppModel {
+        let fixture = grokFixture(percent: percent)
+        return AppModel.preview(
+            snapshot: fixture.snapshot,
+            activity: .unavailable,
+            samples: fixture.samples,
+            plan: "SuperGrok",
+            now: fixture.snapshot.fetchedAt
+        )
+    }
+
+    /// Mirrors the real `/rest/grok/credits` shape by going through the parser, so the
+    /// screenshots cannot drift from what the app actually renders for a live account.
+    private static func grokFixture(
+        percent: Double
+    ) -> (snapshot: UsageSnapshot, samples: [UsageSample]) {
+        let now = Date()
+        let periodEnd = now.addingTimeInterval(3 * 86_400 + 5 * 3_600)
+        let credits = JSONValue.object([
+            "config": .object([
+                "creditUsagePercent": .number(percent),
+                "onDemandCap": .object(["val": .string("0")]),
+                "onDemandUsed": .object(["val": .string("0")]),
+                "prepaidBalance": .object(["val": .string("0")]),
+                "currentPeriod": .object([
+                    "type": .string("USAGE_PERIOD_TYPE_WEEKLY"),
+                    "start": .string(ISO8601.string(from: periodEnd.addingTimeInterval(-7 * 86_400))),
+                    "end": .string(ISO8601.string(from: periodEnd)),
+                ]),
+                "productUsage": .array([
+                    .object([
+                        "product": .string("PRODUCT_GROK_TASKS"),
+                        "usagePercent": .number(percent * 0.97),
+                    ]),
+                    .object([
+                        "product": .string("PRODUCT_GROK_CHAT"),
+                        "usagePercent": .number(percent * 0.02),
+                    ]),
+                    .object([
+                        "product": .string("PRODUCT_GROK_IMAGINE"),
+                        "usagePercent": .number(percent * 0.01),
+                    ]),
+                ]),
+            ]),
+        ])
+        let snapshot = GrokUsageParser.parse(
+            credits: credits, subscriptions: nil, now: now, keepRaw: false
+        ).snapshot
+        let samples = (0...24).map { index in
+            let hoursAgo = Double(24 - index) / 6
+            return UsageSample(
+                t: now.addingTimeInterval(-hoursAgo * 3_600),
+                limits: ["grok_allowance": max(0, percent - hoursAgo * 1.4)],
+                provider: .grok
+            )
+        }
+        return (snapshot, samples)
+    }
+
+    /// Mirrors the real `dashboard/*` shapes by going through the parser, for the same reason
+    /// the Grok fixture does: hand-built `LimitWindow`s drift from what the app actually
+    /// renders. This one used to omit `windowDuration` — which no real payload does — and so
+    /// the preview never showed the "Cursor Models · cursor models included" eyebrow that a
+    /// live account got.
+    private static func cursorFixture(
+        cursorModels: Double = 62, otherModels: Double = 8, grokBot: Double = 24
+    ) -> UsageSnapshot {
+        let now = Date()
+        let cycleEnd = now.addingTimeInterval(12 * 86_400)
+        let cycleStart = cycleEnd.addingTimeInterval(-31 * 86_400)
+        let millis: (Date) -> JSONValue = {
+            .string(String(Int($0.timeIntervalSince1970 * 1000)))
+        }
+        return CursorUsageParser.parse(
+            planInfo: .object(["planInfo": .object(["planName": .string("Pro+")])]),
+            currentPeriodUsage: .object([
+                "billingCycleStart": millis(cycleStart),
+                "billingCycleEnd": millis(cycleEnd),
+                "planUsage": .object([
+                    "autoPercentUsed": .number(cursorModels),
+                    "apiPercentUsed": .number(otherModels),
+                ]),
+            ]),
+            sandUsageStatus: .object([
+                "usagePercent": .number(grokBot),
+                "nextResetTimestampUtc": .string(
+                    ISO8601.string(from: now.addingTimeInterval(4 * 86_400))
+                ),
+            ]),
+            now: now,
+            keepRaw: false
+        ).snapshot
     }
 
     @MainActor

@@ -91,18 +91,19 @@ struct MenuBarLabel: View {
         let style = MenuBarIcon.Style(rawValue: model.settings.menuBarIconStyle) ?? .twinBars
         let metric = model.menuBarMetric
 
-        // Twin bars show both providers, so it reads them directly rather than going through
-        // the single "selected metric" the other styles use.
+        // The bars show every connected provider, so they read them directly rather than
+        // going through the single "selected metric" the other styles use.
+        let connected = model.connectedProviders
         let input = MenuBarIcon.Input(
-            claude: style.showsBothProviders
-                ? model.providerTightestPercent(.claude, now: now).map { $0 / 100 }
-                : metric.map { min($0.percent / 100, 1) },
-            chatgpt: style.showsBothProviders
-                ? model.providerTightestPercent(.chatgpt, now: now).map { $0 / 100 }
-                : nil,
+            levels: style.showsBothProviders
+                ? connected.map { model.providerRemainingPercent($0, now: now).map { $0 / 100 } }
+                : [metric.map { min($0.remainingPercent / 100, 1) }],
             severity: metric?.severity ?? .normal,
             tint: model.settings.tintIconOnAlert,
-            attention: !model.activity.attentionSessions.isEmpty
+            attention: !model.activity.attentionSessions.isEmpty,
+            labels: style.showsBothProviders
+                ? connected.map(\.displayName)
+                : [metric?.provider.displayName ?? "Usage"]
         )
         return MenuBarIcon.image(style: style, input)
     }
@@ -111,7 +112,9 @@ struct MenuBarLabel: View {
         guard let metric = model.menuBarMetric else { return "—" }
         let provider = showProviderTag(for: metric) ? "\(metric.provider.compactTag) " : ""
         let limit = model.settings.showMetricTag ? (metric.limitTag ?? "") : ""
-        return "\(provider)\(Int(metric.percent.rounded()))%\(limit)"
+        // What is left, matching the panel this item opens. It read utilisation before, so
+        // clicking a menu bar showing "55%" opened a panel headlined "45%".
+        return "\(provider)\(Int(metric.remainingPercent.rounded()))%\(limit)"
     }
 
     private var accessibilityText: String {
@@ -119,7 +122,7 @@ struct MenuBarLabel: View {
             return "Usage unavailable"
         }
         let name = metric.limit?.title ?? "usage"
-        return "\(metric.provider.displayName) \(name) \(Int(metric.percent.rounded())) percent used"
+        return "\(metric.provider.displayName) \(name), \(Int(metric.remainingPercent.rounded())) percent left"
     }
 
     /// Claude keeps its historical tag-free look when it is the only live provider; every

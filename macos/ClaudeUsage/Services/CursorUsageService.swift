@@ -90,6 +90,12 @@ public final class CursorUsageService: CursorUsageServiceProtocol, @unchecked Se
         request.setValue(
             "ClaudeUsageTracker/2.1 (macOS; Cursor dashboard)", forHTTPHeaderField: "User-Agent"
         )
+        // Cursor's dashboard API rejects state-changing (POST) requests with no same-origin
+        // proof - `{"error":"Invalid origin for state-changing request"}` - the standard
+        // Next.js Server Actions CSRF guard. `URLSession` never sends these on its own the way
+        // a browser would, so they have to be set explicitly to match the dashboard's own origin.
+        request.setValue("https://cursor.com", forHTTPHeaderField: "Origin")
+        request.setValue("https://cursor.com/dashboard/spending", forHTTPHeaderField: "Referer")
 
         let response = try await transport.send(request)
         switch response.statusCode {

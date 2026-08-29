@@ -6,7 +6,6 @@ struct PopoverView: View {
     @Bindable var model: AppModel
     @State private var sparklineRange: SparklineRange = .fiveHours
     @State private var checkMinutes: Double = 30
-    @State private var showingCursorLogin = false
 
     private var now: Date { model.tick }
 
@@ -34,9 +33,6 @@ struct PopoverView: View {
         .onAppear { sparklineRange = model.settings.sparklineRange }
         .onChange(of: sparklineRange) { _, newValue in
             model.updateSettings { $0.sparklineRange = newValue }
-        }
-        .sheet(isPresented: $showingCursorLogin) {
-            CursorLoginSheet(model: model)
         }
     }
 
@@ -105,8 +101,15 @@ struct PopoverView: View {
             case .chatgpt:
                 ChatGPTConnectPrompt(model: model).padding(.bottom, 14)
             case .cursor:
-                CursorConnectPrompt(model: model) { showingCursorLogin = true }
-                    .padding(.bottom, 14)
+                CursorConnectPrompt(model: model) {
+                    CursorLoginPresenter.shared.show(model: model)
+                }
+                .padding(.bottom, 14)
+            case .grok:
+                GrokConnectPrompt(model: model) {
+                    GrokLoginPresenter.shared.show(model: model)
+                }
+                .padding(.bottom, 14)
             }
         } else if let snapshot {
             VStack(alignment: .leading, spacing: DS.Space.l) {
@@ -125,7 +128,9 @@ struct PopoverView: View {
                     HeroLimitView(
                         limit: hero,
                         projection: model.projection(for: hero),
-                        isTightest: snapshot.limits.count > 1,
+                        // Only worth naming a reason when something was actually ranked.
+                        reason: snapshot.limits.count > 1
+                            ? model.primaryConstraint?.reason : nil,
                         pace: UsageAnalytics.pace(for: hero, now: now),
                         now: now
                     )
@@ -141,10 +146,19 @@ struct PopoverView: View {
                     }
                 }
 
+                if !snapshot.productShares.isEmpty {
+                    VStack(alignment: .leading, spacing: DS.Space.m) {
+                        SectionRule()
+                        ProductShareSection(shares: snapshot.productShares)
+                    }
+                }
+
                 if !others.isEmpty {
                     VStack(alignment: .leading, spacing: 10) {
                         SectionRule()
-                        Eyebrow(text: "Other limits").panelRow()
+                        // The unit is stated once, at the head of the column, rather than
+                        // repeated on every row or left to be guessed at.
+                        Eyebrow(text: "Other limits", detail: "% left").panelRow()
                         ForEach(others, id: \.rowKey) { limit in
                             CompactLimitRow(
                                 limit: limit,
@@ -162,11 +176,10 @@ struct PopoverView: View {
                     }
                 }
 
-                if snapshot.provider == .chatgpt,
-                   snapshot.credits?.isPresentable == true || snapshot.spendControl != nil {
+                if snapshot.credits?.isPresentable == true || snapshot.spendControl != nil {
                     VStack(alignment: .leading, spacing: DS.Space.m) {
                         SectionRule()
-                        ChatGPTAccountMetadata(snapshot: snapshot, now: now)
+                        AccountMetadata(snapshot: snapshot, now: now)
                     }
                 }
 
@@ -224,7 +237,7 @@ struct PopoverView: View {
         guard model.snapshot == nil else { return false }
         switch model.lastError {
         case .missingToken, .unauthorized, .forbidden, .codexAuthenticationRequired, .cliNotFound,
-             .missingCursorSession:
+             .missingCursorSession, .missingGrokSession:
             return true
         default:
             return false
@@ -320,7 +333,7 @@ private struct ErrorBanner: View {
     private var symbol: String {
         switch error {
         case .unauthorized, .forbidden, .missingToken, .codexAuthenticationRequired,
-             .missingCursorSession:
+             .missingCursorSession, .missingGrokSession:
             return "key.slash"
         case .cliNotFound, .unsupportedCLI: return "terminal"
         case .offline: return "wifi.slash"
@@ -442,15 +455,140 @@ private struct CursorConnectPrompt: View {
     }
 }
 
-private struct ChatGPTAccountMetadata: View {
+private struct GrokConnectPrompt: View {
+    @Bindable var model: AppModel
+    var onConnect: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Text("Connect Grok")
+                .font(DS.label(12, weight: .semibold))
+                .foregroundStyle(DS.ink)
+            Text("Grok exposes consumer usage only to a signed-in session, so this app signs in through a one-time embedded browser and keeps only the resulting session in your login keychain.")
+                .font(DS.label(11))
+                .foregroundStyle(DS.inkMuted)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 8) {
+                Button("Connect Grok") { onConnect() }
+                Button("Look again") { model.refreshNow() }
+                Spacer()
+            }
+            .controlSize(.small)
+
+            Text("The tracker never reads cookies from Safari or Chrome — only from this sign-in.")
+                .font(DS.label(10))
+                .foregroundStyle(DS.inkFaint)
+        }
+        .panelRow()
+    }
+}
+
+/// Where one pooled allowance went, as shares rather than as limits.
+///
+/// The bar is a single stacked meter, not one row per product with its own track: these
+/// figures add up to the number in the hero above, and giving each its own full-width track
+/// would read as "Automations is at 97% of its own quota" — which is not what it means.
+private struct ProductShareSection: View {
+    let shares: [ProductUsageShare]
+
+    private var total: Double { shares.reduce(0) { $0 + $1.percent } }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Eyebrow(text: "Where it went")
+
+            GeometryReader { geometry in
+                HStack(spacing: 1.5) {
+                    ForEach(Array(shares.enumerated()), id: \.element.id) { index, share in
+                        Capsule(style: .continuous)
+                            .fill(DS.inkMuted.opacity(shade(index)))
+                            .frame(width: max(2, width(for: share, in: geometry.size.width)))
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+            .frame(height: 6)
+
+            // A legend rather than labels on the bar: the smallest segments are a couple of
+            // points wide and could never carry text of their own.
+            FlowingLegend(shares: shares, shade: shade)
+        }
+        .panelRow()
+    }
+
+    /// Segments are normalized only when they overflow, so an allowance that is genuinely
+    /// half spent shows a half-full bar rather than a full one.
+    private func width(for share: ProductUsageShare, in available: CGFloat) -> CGFloat {
+        let scale = total > 100 ? 100 / total : 1
+        let gaps = CGFloat(max(0, shares.count - 1)) * 1.5
+        return max(0, available - gaps) * CGFloat(share.percent * scale / 100)
+    }
+
+    private func shade(_ index: Int) -> Double {
+        let steps = [0.85, 0.6, 0.45, 0.34, 0.26, 0.2, 0.16, 0.13, 0.1]
+        return steps[min(index, steps.count - 1)]
+    }
+}
+
+private struct FlowingLegend: View {
+    let shares: [ProductUsageShare]
+    let shade: (Int) -> Double
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                HStack(spacing: 10) {
+                    ForEach(row, id: \.element.id) { share, index in
+                        HStack(spacing: 4) {
+                            Circle()
+                                .fill(DS.inkMuted.opacity(shade(index)))
+                                .frame(width: 5, height: 5)
+                            Text(share.label)
+                                .font(DS.label(10.5))
+                                .foregroundStyle(DS.inkMuted)
+                            Text(shareText(share.percent))
+                                .font(DS.figure(10.5, weight: .semibold))
+                                .foregroundStyle(DS.ink)
+                                .monospacedDigit()
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+    }
+
+    /// A share below half a point rounds to "0%", which reads as "this product used nothing"
+    /// when the truth is "a little, but less than a point".
+    private func shareText(_ percent: Double) -> String {
+        percent < 0.5 ? "<1%" : Format.percent(percent)
+    }
+
+    /// Three to a line: the panel is 380pt wide and a product name plus its percentage is
+    /// comfortably under a third of that.
+    private var rows: [[(element: ProductUsageShare, offset: Int)]] {
+        let indexed = shares.enumerated().map { (element: $0.element, offset: $0.offset) }
+        return stride(from: 0, to: indexed.count, by: 3).map {
+            Array(indexed[$0..<min($0 + 3, indexed.count)])
+        }
+    }
+}
+
+/// The balance-and-spend-control footnotes some providers attach to their allowance.
+///
+/// Was ChatGPT-only until Grok arrived reporting the same kind of thing — a prepaid balance
+/// alongside the meter. The labels come from the provider so each reads in that service's own
+/// words rather than in OpenAI's.
+private struct AccountMetadata: View {
     let snapshot: UsageSnapshot
     let now: Date
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Eyebrow(text: "ChatGPT allowance")
+            Eyebrow(text: "\(snapshot.provider.displayName) allowance")
             if let credits = snapshot.credits, credits.isPresentable {
-                metadataRow("Credits", creditsText(credits))
+                metadataRow(creditsLabel, creditsText(credits))
             }
             if let control = snapshot.spendControl {
                 metadataRow("Spend control", "\(control.used) of \(control.limit)")
@@ -470,6 +608,12 @@ private struct ChatGPTAccountMetadata: View {
             Spacer()
             Text(value).font(DS.figure(10.5, weight: .semibold)).foregroundStyle(DS.ink)
         }
+    }
+
+    /// Grok calls this "Extra Usage Credits" on its own settings page; nothing is gained by
+    /// renaming it to something more generic on the way through.
+    private var creditsLabel: String {
+        snapshot.provider == .grok ? "Extra usage credits" : "Credits"
     }
 
     private func creditsText(_ credits: UsageCredits) -> String {

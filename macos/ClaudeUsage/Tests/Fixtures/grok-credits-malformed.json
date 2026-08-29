@@ -1,0 +1,16 @@
+{
+  "config": {
+    "creditUsagePercent": "-12",
+    "onDemandCap": { "val": "not-a-number" },
+    "currentPeriod": {
+      "type": "USAGE_PERIOD_TYPE_UNSPECIFIED",
+      "end": "tomorrow"
+    },
+    "productUsage": [
+      { "product": "PRODUCT_GROK_CHAT", "usagePercent": "oops" },
+      { "product": "PRODUCT_SOMETHING_NEW", "usagePercent": 8 },
+      { "usagePercent": 4 }
+    ],
+    "prepaidBalance": {}
+  }
+}

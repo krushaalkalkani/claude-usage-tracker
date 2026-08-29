@@ -25,6 +25,9 @@ public enum UsageAPIError: Error, Equatable, Sendable {
     /// completed (or was removed). Distinct from `.unauthorized`, which means a stored cookie
     /// was rejected by cursor.com.
     case missingCursorSession
+    /// No Grok session cookie is stored in Keychain. Same distinction as
+    /// `missingCursorSession`: absent credential, not a rejected one.
+    case missingGrokSession
 
     public var isTransient: Bool {
         switch self {
@@ -44,12 +47,14 @@ public enum UsageAPIError: Error, Equatable, Sendable {
             switch provider {
             case .chatgpt: return "Codex login required"
             case .cursor: return "Cursor login required"
+            case .grok: return "Grok login required"
             case .claude: return "Not connected"
             }
         case .unauthorized:
             switch provider {
             case .chatgpt: return "Codex login needs refresh"
             case .cursor: return "Cursor session expired"
+            case .grok: return "Grok session expired"
             case .claude: return "Authentication expired"
             }
         case .forbidden: return "Access denied"
@@ -58,6 +63,7 @@ public enum UsageAPIError: Error, Equatable, Sendable {
             switch provider {
             case .chatgpt: return "ChatGPT usage is unavailable"
             case .cursor: return "Cursor usage is unavailable"
+            case .grok: return "Grok usage is unavailable"
             case .claude: return "Anthropic is having trouble"
             }
         case .http: return "Unexpected response"
@@ -72,6 +78,7 @@ public enum UsageAPIError: Error, Equatable, Sendable {
         case .cliUnavailable: return "Codex CLI unavailable"
         case .unsupportedCLI: return "Codex CLI update needed"
         case .missingCursorSession: return "Cursor login required"
+        case .missingGrokSession: return "Grok login required"
         }
     }
 
@@ -85,18 +92,21 @@ public enum UsageAPIError: Error, Equatable, Sendable {
             switch provider {
             case .chatgpt: return "Open Codex or run codex login, then refresh."
             case .cursor: return "Connect Cursor in Settings, then refresh."
+            case .grok: return "Connect Grok in Settings, then refresh."
             case .claude: return "Add an OAuth token in Settings, or sign in to Claude Code."
             }
         case .unauthorized:
             switch provider {
             case .chatgpt: return "Open Codex or run codex login to refresh its credentials."
             case .cursor: return "Your Cursor session expired. Reconnect in Settings."
+            case .grok: return "Your Grok session expired. Reconnect in Settings."
             case .claude: return "The token was rejected. Reconnect in Settings."
             }
         case .forbidden:
             switch provider {
             case .chatgpt: return "Open Codex or run codex login to refresh its credentials."
             case .cursor: return "Your Cursor session expired. Reconnect in Settings."
+            case .grok: return "Your Grok session expired. Reconnect in Settings."
             case .claude: return "This token is not allowed to read usage."
             }
         case .rateLimited(let after):
@@ -128,6 +138,8 @@ public enum UsageAPIError: Error, Equatable, Sendable {
             return "This Codex version does not expose account rate limits. Update Codex and refresh."
         case .missingCursorSession:
             return "Connect Cursor in Settings to sign in via the embedded browser."
+        case .missingGrokSession:
+            return "Connect Grok in Settings to sign in via the embedded browser."
         }
     }
 }

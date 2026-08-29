@@ -487,4 +487,88 @@ struct NotificationPolicyTests {
         )
         #expect(out.isEmpty, "restarting the app re-announced an old threshold")
     }
+
+    // MARK: Presentation
+
+    @Test("a usage alert's thumbnail shows what is left, like every other surface")
+    func thresholdArtwork() {
+        var ledger = NotificationLedger()
+        let out = NotificationPolicy.evaluate(
+            context(limits: [makeLimit(percent: 96, resetsAt: reset)]), ledger: &ledger
+        )
+        let art = try? #require(out.first?.artwork)
+        #expect(art?.tint == .critical)
+        // 96 % used is 4 % left. A banner captioned "96%" next to a panel headlined "4%" is
+        // the same ambiguity the panel itself was cured of.
+        #expect(art?.caption == "4%")
+        #expect(abs((art?.ring ?? 0) - 0.04) < 0.001)
+        // …while the title still names the threshold that fired, unambiguously.
+        #expect(out.first?.title.contains("95% used") == true, "got: \(out.first?.title ?? "")")
+    }
+
+    @Test("a limit past 100% still renders a full ring rather than overflowing")
+    func artworkClampsRing() {
+        let art = NotificationArtwork.percent(140, tint: .critical)
+        #expect(art.ring == 1)
+        #expect(art.caption == "140%")
+    }
+
+    @Test("titles name the limit; the news goes to the subtitle")
+    func projectionSplitsTitleFromNews() {
+        var ledger = NotificationLedger()
+        let limit = makeLimit(percent: 60, resetsAt: reset)
+        let projection = UsageProjection(
+            limitID: limit.id, currentPercent: 60,
+            burnRate: BurnRate(perHour: 30, sampleCount: 10, span: 3_600, fitQuality: 0.95),
+            projectedAtReset: 120, timeToExhaustion: 1_800, timeUntilReset: 7_200
+        )
+        let out = NotificationPolicy.evaluate(
+            context(limits: [limit], projections: [limit.id: projection]), ledger: &ledger
+        )
+        let note = try? #require(out.first { $0.category == .projectedOverrun })
+        // Short enough that macOS renders it on one line.
+        #expect(note?.title == "Claude · Session")
+        #expect(note?.subtitle == "Empty in 30m at this pace")
+        // The shortfall is the actionable number: 2h until reset, 30m of quota left.
+        #expect(note?.body.contains("1h 30m short of the reset") == true)
+    }
+
+    @Test("the detail line quotes a burn rate only when the trend is grounded")
+    func statusLineGatesOnFitQuality() {
+        let limit = makeLimit(percent: 76, resetsAt: reset)
+        let weak = UsageProjection(
+            limitID: limit.id, currentPercent: 76,
+            burnRate: BurnRate(perHour: 30, sampleCount: 2, span: 600, fitQuality: 0.1),
+            projectedAtReset: nil, timeToExhaustion: nil, timeUntilReset: 7_200
+        )
+        var ledger = NotificationLedger()
+        let vague = NotificationPolicy.evaluate(
+            context(limits: [limit], projections: [limit.id: weak]), ledger: &ledger
+        )
+        #expect(vague.first?.body == "24% left · resets in 2h")
+
+        let solid = UsageProjection(
+            limitID: limit.id, currentPercent: 76,
+            burnRate: BurnRate(perHour: 30, sampleCount: 10, span: 3_600, fitQuality: 0.95),
+            projectedAtReset: nil, timeToExhaustion: nil, timeUntilReset: 7_200
+        )
+        var fresh = NotificationLedger()
+        let precise = NotificationPolicy.evaluate(
+            context(limits: [limit], projections: [limit.id: solid]), ledger: &fresh
+        )
+        #expect(precise.first?.body == "24% left · 30%/h · resets in 2h")
+    }
+
+    @Test("an API failure has no figure to show, so it shows no ring")
+    func apiArtworkHasNoRing() {
+        var ledger = NotificationLedger()
+        let out = NotificationPolicy.evaluate(
+            context(limits: [], error: .unauthorized, healthy: false), ledger: &ledger
+        )
+        let note = try? #require(out.first { $0.category == .apiAuth })
+        #expect(note?.title == "Claude")
+        #expect(note?.subtitle == "Authentication expired")
+        #expect(note?.artwork?.ring == nil)
+        #expect(note?.artwork?.caption == "!")
+    }
 }

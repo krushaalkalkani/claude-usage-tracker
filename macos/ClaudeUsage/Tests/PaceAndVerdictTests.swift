@@ -125,4 +125,31 @@ struct PaceAndVerdictTests {
         #expect(v.estimatedCost < 20, "only the pre-reset portion counts, got \(v.estimatedCost)")
         #expect(v.call != .stop)
     }
+
+    @Test("a cost under half a point is not reported as free")
+    func subOnePercentCostIsNotZero() {
+        // "Needs ~0% of the 68% left" reads as "this is free" when it means "this is small".
+        let limit = LimitWindow(
+            id: "weekly_all", kind: "weekly_all", group: .weekly,
+            title: "7-day", shortTitle: "Weekly",
+            percent: 32, resetsAt: Date.fixedNow.plus(days: 5), severity: .normal
+        )
+        let v = UsageAnalytics.verdict(
+            for: limit, taskMinutes: 15,
+            // 0.4 %/h over 15 minutes is 0.1 points.
+            samples: samples(id: "weekly_all", perHour: 0.4, hours: 12, endingAt: 32),
+            now: .fixedNow
+        )
+        #expect(v.call == .go)
+        #expect(!v.detail.contains("~0%"), "got: \(v.detail)")
+        #expect(v.detail.contains("<1%"), "got: \(v.detail)")
+    }
+
+    @Test("percentAtLeast only reaches for the floor on a genuinely non-zero value")
+    func percentFloorIsNarrow() {
+        #expect(Format.percentAtLeast(0) == "0%")
+        #expect(Format.percentAtLeast(0.2) == "<1%")
+        #expect(Format.percentAtLeast(0.6) == "1%")
+        #expect(Format.percentAtLeast(42) == "42%")
+    }
 }

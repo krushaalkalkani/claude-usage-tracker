@@ -10,4 +10,20 @@ if PreviewRenderer.runIfRequested() {
     exit(0)
 }
 
+if AppIconRenderer.runIfRequested() {
+    exit(0)
+}
+
+if NotificationPreview.runIfRequested() {
+    exit(0)
+}
+
+if CursorUsageDebug.runIfRequested() {
+    exit(0)
+}
+
+if GrokUsageDebug.runIfRequested() {
+    exit(0)
+}
+
 ClaudeUsageApp.main()

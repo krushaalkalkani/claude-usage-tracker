@@ -13,37 +13,46 @@ import ClaudeUsageCore
 enum MenuBarIcon {
 
     /// What the glyph shows. `twinBars` is the default because it is the only style that
-    /// renders both providers at once without digits: two upright bars where height is
+    /// renders every connected provider at once without digits: upright bars where height is
     /// quantity, which is the one visual metaphor nobody has to be taught.
+    ///
+    /// Every style draws **what is left**, so the glyph drains as you spend, exactly like a
+    /// battery and exactly like the number beside it. It used to fill as you spent, which put
+    /// a full bar next to "45%" and made a nearly-exhausted account look like a healthy one.
     enum Style: String, Sendable, Codable, CaseIterable, Identifiable {
         case twinBars, ring, tickMeter, wedge
         public var id: String { rawValue }
 
         var label: String {
             switch self {
-            case .twinBars: return "Twin bars (both providers)"
+            case .twinBars: return "Bars (every provider)"
             case .ring: return "Ring"
             case .tickMeter: return "Tick meter"
             case .wedge: return "Wedge"
             }
         }
 
-        /// Only twin bars can express two providers; the rest show the tightest limit.
+        /// Only the bars can express more than one provider; the rest show the binding limit.
         var showsBothProviders: Bool { self == .twinBars }
     }
 
     struct Input {
-        /// 0...1, or nil when that provider has no current data.
-        var claude: Double?
-        var chatgpt: Double?
+        /// One slot per provider the user has actually connected, in a stable order, so a
+        /// bar keeps its meaning between refreshes. The value is 0...1 of the allowance
+        /// **still available**, or nil when that provider currently has no usable data.
+        ///
+        /// This was two fixed fields, `claude` and `chatgpt`, which meant a tracked Cursor or
+        /// Grok subscription had no way to appear in the menu bar at all.
+        var levels: [Double?] = []
         var severity: Severity = .normal
         var tint: Bool = true
         /// Claude Code needs the user — drawn as a notch, never as a fill level.
         var attention: Bool = false
+        /// Names for the accessibility description, parallel to `levels`.
+        var labels: [String] = []
 
-        var worst: Double? {
-            [claude, chatgpt].compactMap { $0 }.max()
-        }
+        /// The least headroom anyone reported — what the single-value styles draw.
+        var lowest: Double? { levels.compactMap { $0 }.min() }
     }
 
     static func image(style: Style, _ input: Input) -> NSImage {
@@ -54,13 +63,13 @@ enum MenuBarIcon {
             // opaque black so the alpha mask comes out right.
             : .black
 
-        let width = self.width(for: style, attention: input.attention)
+        let width = self.width(for: style, attention: input.attention, slots: input.levels.count)
         let image = NSImage(size: NSSize(width: width, height: 16), flipped: false) { rect in
             switch style {
-            case .twinBars: drawTwinBars(rect, input, ink)
-            case .ring: drawRing(rect, input.worst, ink)
-            case .tickMeter: drawTicks(rect, input.worst, ink)
-            case .wedge: drawWedge(rect, input.worst, ink)
+            case .twinBars: drawBars(rect, input, ink)
+            case .ring: drawRing(rect, input.lowest, ink)
+            case .tickMeter: drawTicks(rect, input.lowest, ink)
+            case .wedge: drawWedge(rect, input.lowest, ink)
             }
             if input.attention { drawAttention(rect, ink) }
             return true
@@ -71,10 +80,16 @@ enum MenuBarIcon {
         return image
     }
 
-    private static func width(for style: Style, attention: Bool) -> CGFloat {
+    /// Bar geometry, shared by the width calculation and the drawing so they cannot drift.
+    private static let barWidth: CGFloat = 4
+    private static let barGap: CGFloat = 3
+
+    private static func width(for style: Style, attention: Bool, slots: Int) -> CGFloat {
         let base: CGFloat
         switch style {
-        case .twinBars: base = 14
+        case .twinBars:
+            let n = CGFloat(max(1, slots))
+            base = n * barWidth + (n - 1) * barGap + 1
         case .ring: base = 16
         case .tickMeter: base = 20
         case .wedge: base = 14
@@ -84,23 +99,33 @@ enum MenuBarIcon {
 
     // MARK: Styles
 
-    /// Left bar Claude, right bar ChatGPT. Both slots are always drawn, so position keeps its
-    /// meaning even when one provider has no data — an absent provider is an empty track
-    /// rather than a missing bar that would shift the other one.
-    private static func drawTwinBars(_ rect: NSRect, _ input: Input, _ ink: NSColor) {
-        let w: CGFloat = 5, gap: CGFloat = 4, h = rect.height - 3
-        for (i, value) in [input.claude, input.chatgpt].enumerated() {
-            let x = CGFloat(i) * (w + gap) + 0.5
+    /// One bar per connected provider, in a fixed order, so a bar's position keeps its
+    /// meaning between refreshes. A provider with no usable data right now is an empty track
+    /// rather than a missing bar that would shift its neighbours along.
+    ///
+    /// Height is what is **left**: a full bar means plenty of headroom and the bar drains as
+    /// the allowance is spent.
+    private static func drawBars(_ rect: NSRect, _ input: Input, _ ink: NSColor) {
+        let h = rect.height - 3
+        let slots = input.levels.isEmpty ? [nil] : input.levels
+        for (i, value) in slots.enumerated() {
+            let x = CGFloat(i) * (barWidth + barGap) + 0.5
             let track = NSBezierPath(
-                roundedRect: NSRect(x: x, y: 2, width: w, height: h), xRadius: 2, yRadius: 2
+                roundedRect: NSRect(x: x, y: 2, width: barWidth, height: h),
+                xRadius: 1.6, yRadius: 1.6
             )
             ink.withAlphaComponent(0.30).setFill()
             track.fill()
 
             guard let value else { continue }
-            let fh = max(2.5, h * min(max(value, 0), 1))
+            // A provider that is genuinely empty draws nothing rather than a 2.5pt stub that
+            // would read as "a little left".
+            let level = min(max(value, 0), 1)
+            guard level > 0.001 else { continue }
+            let fh = max(2, h * level)
             let fill = NSBezierPath(
-                roundedRect: NSRect(x: x, y: 2, width: w, height: fh), xRadius: 2, yRadius: 2
+                roundedRect: NSRect(x: x, y: 2, width: barWidth, height: fh),
+                xRadius: 1.6, yRadius: 1.6
             )
             ink.setFill()
             fill.fill()
@@ -174,8 +199,11 @@ enum MenuBarIcon {
 
     private static func describe(_ input: Input) -> String {
         var parts: [String] = []
-        if let c = input.claude { parts.append("Claude \(Int((c * 100).rounded())) percent") }
-        if let g = input.chatgpt { parts.append("ChatGPT \(Int((g * 100).rounded())) percent") }
+        for (i, value) in input.levels.enumerated() {
+            guard let value else { continue }
+            let name = i < input.labels.count ? input.labels[i] : "Provider \(i + 1)"
+            parts.append("\(name) \(Int((value * 100).rounded())) percent left")
+        }
         if parts.isEmpty { return "Usage unknown" }
         if input.attention { parts.append("Claude Code needs attention") }
         return parts.joined(separator: ", ")
@@ -183,6 +211,6 @@ enum MenuBarIcon {
 
     /// Shown when there is no data at all — empty tracks, no alarm.
     static func unknown(style: Style) -> NSImage {
-        image(style: style, Input(claude: nil, chatgpt: nil, tint: false))
+        image(style: style, Input(levels: [nil], tint: false))
     }
 }

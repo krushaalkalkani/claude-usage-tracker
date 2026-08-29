@@ -6,6 +6,7 @@ public enum UsageProvider: String, Sendable, Codable, CaseIterable, Identifiable
     case claude
     case chatgpt
     case cursor
+    case grok
 
     public var id: String { rawValue }
 
@@ -14,6 +15,7 @@ public enum UsageProvider: String, Sendable, Codable, CaseIterable, Identifiable
         case .claude: return "Claude"
         case .chatgpt: return "ChatGPT"
         case .cursor: return "Cursor"
+        case .grok: return "Grok"
         }
     }
 
@@ -27,6 +29,9 @@ public enum UsageProvider: String, Sendable, Codable, CaseIterable, Identifiable
         case .claude: return "A"
         case .chatgpt: return "O"
         case .cursor: return "C"
+        // xAI, so the tag cannot be mistaken for Cursor's "C" — and Cursor's own
+        // "Grok Bot" meter is a different thing again (see `allowanceDescription`).
+        case .grok: return "X"
         }
     }
 
@@ -38,6 +43,8 @@ public enum UsageProvider: String, Sendable, Codable, CaseIterable, Identifiable
             return URL(string: "https://chatgpt.com/codex/settings/usage")!
         case .cursor:
             return URL(string: "https://cursor.com/dashboard/spending")!
+        case .grok:
+            return URL(string: "https://grok.com/?_s=usage")!
         }
     }
 
@@ -46,6 +53,7 @@ public enum UsageProvider: String, Sendable, Codable, CaseIterable, Identifiable
         case .claude: return nil
         case .chatgpt: return "Codex / agentic allowance"
         case .cursor: return "Included usage + Grok Bot"
+        case .grok: return "Plan allowance across Grok products"
         }
     }
 }
@@ -62,6 +70,7 @@ public enum ProviderDataSource: String, Sendable, Codable, Equatable {
     case codexCLI
     case localCodexOAuth
     case cursorWebViewSession
+    case grokWebViewSession
 
     public var label: String {
         switch self {
@@ -69,6 +78,7 @@ public enum ProviderDataSource: String, Sendable, Codable, Equatable {
         case .codexCLI: return "Codex CLI"
         case .localCodexOAuth: return "Local Codex OAuth"
         case .cursorWebViewSession: return "Cursor session (WebView)"
+        case .grokWebViewSession: return "Grok session (WebView)"
         }
     }
 }
@@ -90,8 +100,8 @@ public struct ProviderUsageState: Sendable, Equatable {
     public var connectionState: ProviderConnectionState
     public var dataSource: ProviderDataSource?
     /// A local credential was found without needing a live fetch. Populated by ChatGPT (Codex
-    /// CLI on PATH) and reused as-is by Cursor (a session cookie already sitting in Keychain);
-    /// the name predates Cursor and is kept for storage/decoding compatibility.
+    /// CLI on PATH) and reused as-is by Cursor and Grok (a session cookie already sitting in
+    /// Keychain); the name predates both and is kept for storage/decoding compatibility.
     public var cliDetected: Bool?
     public var consecutiveFailures: Int
     public var nextRetryAt: Date?
@@ -128,6 +138,7 @@ public struct ProviderUsageState: Sendable, Equatable {
 public struct MenuBarUsageMetric: Sendable, Equatable {
     public let provider: UsageProvider
     public let limit: LimitWindow?
+    /// Utilisation, 0…100+. Thresholds and severity are expressed against this.
     public let percent: Double
     public let severity: Severity
     public let limitTag: String?
@@ -145,6 +156,13 @@ public struct MenuBarUsageMetric: Sendable, Equatable {
         self.severity = severity
         self.limitTag = limitTag
     }
+
+    /// What is left — the figure every surface in the app *displays*.
+    ///
+    /// `percent` stays as utilisation because that is what thresholds, severities and the API
+    /// itself are expressed in; converting at the point of display keeps one subtraction in
+    /// one place instead of scattering `100 -` through the views.
+    public var remainingPercent: Double { max(0, 100 - percent) }
 }
 
 public enum MenuBarMetricPolicy {
@@ -172,13 +190,18 @@ public enum MenuBarMetricPolicy {
             )
         }
 
+        // `auto` means "whichever limit will actually stop me first", which is a question
+        // about time as well as utilisation — so it goes through the same ranking the panel's
+        // hero uses, reading this provider's own projections. The status item and the panel
+        // must never describe different windows.
+        let automatic = snapshot.constraint(projections: state.projections)?.limit
         let limit: LimitWindow?
         switch primaryMetric {
-        case .auto: limit = snapshot.bottleneck
-        case .session: limit = snapshot.sessionLimit ?? snapshot.bottleneck
-        case .weekly: limit = snapshot.weeklyLimit ?? snapshot.bottleneck
-        case .highestModel: limit = snapshot.modelLimits.first ?? snapshot.bottleneck
-        case .spend: limit = snapshot.bottleneck
+        case .auto: limit = automatic
+        case .session: limit = snapshot.sessionLimit ?? automatic
+        case .weekly: limit = snapshot.weeklyLimit ?? automatic
+        case .highestModel: limit = snapshot.modelLimits.first ?? automatic
+        case .spend: limit = automatic
         }
         guard let limit else { return nil }
 

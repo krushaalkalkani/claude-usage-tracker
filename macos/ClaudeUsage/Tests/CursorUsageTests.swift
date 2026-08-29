@@ -4,7 +4,7 @@ import Testing
 
 @Suite("Cursor usage parsing")
 struct CursorUsageParserTests {
-    @Test("normal included-usage and Grok Bot windows parse with plan label")
+    @Test("Cursor Models, Other Models, and Grok Bot windows parse with plan label")
     func normalWindows() throws {
         let parsed = CursorUsageParser.parse(
             planInfo: try Fixture.json("cursor-plan-info"),
@@ -14,23 +14,68 @@ struct CursorUsageParserTests {
         )
         #expect(parsed.snapshot.provider == .cursor)
         #expect(parsed.planLabel == "Pro+")
-        #expect(parsed.snapshot.limits.count == 2)
+        #expect(parsed.snapshot.limits.count == 3)
 
-        let included = try #require(parsed.snapshot.limits.first { $0.id == "included_usage" })
-        #expect(included.percent == 30)
-        #expect(included.provider == .cursor)
-        #expect(included.resetsAt == Date(timeIntervalSince1970: 1_790_224_537))
+        let cursorModels = try #require(parsed.snapshot.limits.first { $0.id == "cursor_models" })
+        #expect(cursorModels.percent == 30)
+        #expect(cursorModels.provider == .cursor)
+        #expect(cursorModels.resetsAt == Date(timeIntervalSince1970: 1_790_224_537))
+
+        let otherModels = try #require(parsed.snapshot.limits.first { $0.id == "other_models" })
+        #expect(otherModels.percent == 0)
+        #expect(otherModels.resetsAt == Date(timeIntervalSince1970: 1_790_224_537))
 
         let grokBot = try #require(parsed.snapshot.limits.first { $0.id == "grok_bot" })
         #expect(grokBot.shortTitle == "Grok Bot")
         #expect(abs(grokBot.percent - 23.727263) < 0.0001)
         #expect(grokBot.resetsAt == ISO8601.parse("2026-08-31T19:28:09.358Z")?.truncatingSubsecond)
+        // Without a surface the hero card labels this generically as "Weekly · 7-day" and the
+        // name "Grok Bot" appears nowhere on screen.
+        #expect(grokBot.surface == "Grok Bot")
 
-        // Included usage (30%) is the tighter of the two, so it is the bottleneck.
-        #expect(parsed.snapshot.bottleneck?.id == "included_usage")
+        // Cursor Models (30%) is the tightest of the three, so it is the bottleneck.
+        #expect(parsed.snapshot.bottleneck?.id == "cursor_models")
+
+        // Both ends of the billing cycle are in the payload, so the window length is known
+        // rather than guessed. Without it these windows fall into the "unknown length" path:
+        // no pace bar, no window-start cutoff for the burn rate, and a hero eyebrow that
+        // invented a period from the internal `kind` ("Cursor Models · cursor models included").
+        let cycle = try #require(cursorModels.windowDuration)
+        #expect(abs(cycle - 2_678_400) < 1, "31 days, got \(cycle)")
+        #expect(otherModels.windowDuration == cursorModels.windowDuration)
+        #expect(UsageAnalytics.windowLength(for: cursorModels) == cycle)
+        // …and with a length, pace becomes answerable for a Cursor window.
+        #expect(UsageAnalytics.pace(
+            for: cursorModels, now: Date(timeIntervalSince1970: 1_789_000_000)
+        ) != nil)
     }
 
-    @Test("only the included-usage window parses when Grok Bot status is unavailable")
+    @Test("a nonsensical billing cycle is dropped rather than believed")
+    func implausibleBillingCycle() throws {
+        // A start after its end, or a span no billing cycle could have, means one of the two
+        // timestamps is wrong — and a wrong window length silently corrupts pace, the burn
+        // rate's window cutoff, and the go/no-go answer built on top of them.
+        func duration(start: String, end: String) throws -> TimeInterval? {
+            let json = """
+            {"billingCycleStart": "\(start)", "billingCycleEnd": "\(end)",
+             "planUsage": {"autoPercentUsed": 30, "apiPercentUsed": 0}}
+            """
+            let parsed = CursorUsageParser.parse(
+                planInfo: nil,
+                currentPeriodUsage: try JSONValue.parse(Data(json.utf8)),
+                sandUsageStatus: nil,
+                now: .fixedNow
+            )
+            return parsed.snapshot.limits.first { $0.id == "cursor_models" }?.windowDuration
+        }
+
+        #expect(try duration(start: "1790224537000", end: "1787546137000") == nil, "start after end")
+        #expect(try duration(start: "1787546137000", end: "1787549737000") == nil, "one hour")
+        #expect(try duration(start: "1", end: "1790224537000") == nil, "epoch to now")
+        #expect(try duration(start: "1787546137000", end: "1790224537000") != nil, "the real one")
+    }
+
+    @Test("only the included-usage windows parse when Grok Bot status is unavailable")
     func missingSandStatus() throws {
         let parsed = CursorUsageParser.parse(
             planInfo: nil,
@@ -38,8 +83,9 @@ struct CursorUsageParserTests {
             sandUsageStatus: nil,
             now: .fixedNow
         )
-        #expect(parsed.snapshot.limits.count == 1)
-        #expect(parsed.snapshot.limits.first?.id == "included_usage")
+        #expect(parsed.snapshot.limits.count == 2)
+        #expect(parsed.snapshot.limits.contains { $0.id == "cursor_models" })
+        #expect(parsed.snapshot.limits.contains { $0.id == "other_models" })
         #expect(parsed.planLabel == nil)
         #expect(parsed.snapshot.schemaWarnings.contains {
             $0.contains("get-sand-usage-status response missing")
@@ -54,11 +100,15 @@ struct CursorUsageParserTests {
             sandUsageStatus: try Fixture.json("cursor-sand-usage-status-malformed"),
             now: .fixedNow
         )
-        // totalPercentUsed arrived as the string "-15": still readable, then clamped to 0.
-        let included = try #require(parsed.snapshot.limits.first { $0.id == "included_usage" })
-        #expect(included.percent == 0)
-        #expect(included.rawPercent == -15)
-        #expect(included.resetsAt == nil)  // billingCycleEnd was not a number.
+        // autoPercentUsed arrived as the string "-15": still readable, then clamped to 0.
+        let cursorModels = try #require(parsed.snapshot.limits.first { $0.id == "cursor_models" })
+        #expect(cursorModels.percent == 0)
+        #expect(cursorModels.rawPercent == -15)
+        #expect(cursorModels.resetsAt == nil)  // billingCycleEnd was not a number.
+
+        // apiPercentUsed was not a number at all, so no Other Models window is produced.
+        #expect(!parsed.snapshot.limits.contains { $0.id == "other_models" })
+        #expect(parsed.snapshot.schemaWarnings.contains { $0.contains("missing apiPercentUsed") })
 
         // usagePercent was not a number at all, so no Grok Bot window is produced.
         #expect(!parsed.snapshot.limits.contains { $0.id == "grok_bot" })
@@ -130,8 +180,8 @@ struct CursorProviderIsolationTests {
             fetchedAt: .fixedNow,
             limits: [
                 LimitWindow(
-                    id: "included_usage", kind: "cursor_included_usage", group: .other,
-                    title: "Included usage", shortTitle: "Included usage",
+                    id: "cursor_models", kind: "cursor_models_included", group: .other,
+                    title: "Cursor Models", shortTitle: "Cursor Models",
                     percent: percent, resetsAt: nil, severity: Severity.from(percent: percent),
                     provider: provider
                 ),
@@ -208,7 +258,7 @@ struct CursorUsageServiceTests {
         let result = try await service.fetchUsage()
         #expect(result.planLabel == "Pro+")
         #expect(result.snapshot.provider == .cursor)
-        #expect(result.snapshot.limits.count == 2)
+        #expect(result.snapshot.limits.count == 3)
     }
 }
 

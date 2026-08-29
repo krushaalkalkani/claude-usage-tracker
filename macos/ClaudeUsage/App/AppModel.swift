@@ -59,6 +59,8 @@ public final class AppModel {
     private let chatGPT: ChatGPTUsageServiceProtocol
     private let cursor: CursorUsageServiceProtocol
     private let cursorSessionStore: CursorSessionCookieStoreProtocol
+    private let grok: GrokUsageServiceProtocol
+    private let grokSessionStore: GrokSessionCookieStoreProtocol
     private let tokenStore: TokenStore
     private let history: HistoryStore
     private let settingsStore: SettingsStore
@@ -82,6 +84,8 @@ public final class AppModel {
         chatGPT: ChatGPTUsageServiceProtocol = ChatGPTUsageService(),
         cursor: CursorUsageServiceProtocol = CursorUsageService(),
         cursorSessionStore: CursorSessionCookieStoreProtocol = CursorSessionCookieStore(),
+        grok: GrokUsageServiceProtocol = GrokUsageService(),
+        grokSessionStore: GrokSessionCookieStoreProtocol = GrokSessionCookieStore(),
         tokenStore: TokenStore = TokenStore(),
         history: HistoryStore = HistoryStore(),
         settingsStore: SettingsStore = SettingsStore(),
@@ -98,6 +102,8 @@ public final class AppModel {
         self.chatGPT = chatGPT
         self.cursor = cursor
         self.cursorSessionStore = cursorSessionStore
+        self.grok = grok
+        self.grokSessionStore = grokSessionStore
         self.tokenStore = tokenStore
         self.history = history
         self.settingsStore = settingsStore
@@ -236,7 +242,8 @@ public final class AppModel {
         async let claude: Void = refreshClaudeUsage()
         async let chatgpt: Void = refreshChatGPTUsage()
         async let cursorRefresh: Void = refreshCursorUsage()
-        _ = await (claude, chatgpt, cursorRefresh)
+        async let grokRefresh: Void = refreshGrokUsage()
+        _ = await (claude, chatgpt, cursorRefresh, grokRefresh)
     }
 
     private func shouldRefresh(_ provider: UsageProvider, now: Date = Date()) -> Bool {
@@ -338,6 +345,29 @@ public final class AppModel {
         }
     }
 
+    private func refreshGrokUsage() async {
+        guard shouldRefresh(.grok) else { return }
+        updateProvider(.grok) {
+            $0.isRefreshing = true
+            $0.cliDetected = grok.hasStoredSession()
+        }
+        defer { updateProvider(.grok) { $0.isRefreshing = false } }
+
+        do {
+            let result = try await grok.fetchUsage()
+            updateProvider(.grok) { $0.cliDetected = true }
+            handleSuccess(
+                result.snapshot, planLabel: result.planLabel, source: .grokWebViewSession
+            )
+        } catch is CancellationError {
+            return
+        } catch let error as UsageAPIError {
+            recordFailure(error, for: .grok)
+        } catch {
+            recordFailure(.network(error.localizedDescription), for: .grok)
+        }
+    }
+
     private func handleSuccess(
         _ fresh: UsageSnapshot,
         planLabel: String?,
@@ -423,7 +453,7 @@ public final class AppModel {
             if state.snapshot != nil { state.isShowingCachedData = true }
             switch error {
             case .missingToken, .unauthorized, .forbidden, .codexAuthenticationRequired,
-                 .missingCursorSession:
+                 .missingCursorSession, .missingGrokSession:
                 state.connectionState = .authenticationRequired
             case .cliNotFound:
                 state.connectionState = .unavailable
@@ -499,6 +529,43 @@ public final class AppModel {
         Task { [notifications] in await notifications.deliver(pending) }
     }
 
+    /// Posts one representative alert on demand.
+    ///
+    /// Notifications are the app's main output and, until now, the only way to see what one
+    /// looked like was to wait until a quota threshold happened to be crossed. It mirrors the
+    /// live bottleneck when there is one, so what the user sees in the banner is exactly what
+    /// the real alert will say.
+    func sendSampleNotification() {
+        let provider = selectedProvider
+        let now = Date()
+        let note: PendingNotification
+        let state = state(for: provider)
+        // The window the panel would lead with, so the sample alert is a preview of a real
+        // one rather than of a different limit.
+        if let limit = state.snapshot?.constraint(projections: state.projections)?.limit {
+            let pace = state.projections[limit.id]?.burnRate
+            note = PendingNotification(
+                id: "sample|\(UUID().uuidString)",
+                category: .usageThreshold,
+                title: "\(provider.displayName) · \(limit.shortTitle) at \(Format.percent(limit.percent)) used",
+                body: NotificationPolicy.statusLine(limit, pace: pace, now: now),
+                severity: limit.severity,
+                artwork: .remaining(of: limit, tint: limit.severity)
+            )
+        } else {
+            // No live data yet — show the shape of the thing rather than nothing.
+            note = PendingNotification(
+                id: "sample|\(UUID().uuidString)",
+                category: .usageThreshold,
+                title: "\(provider.displayName) · Session at 90% used",
+                body: "10% left · 4.2%/h · resets in 1h 20m",
+                severity: .warning,
+                artwork: .percent(10, tint: .warning)
+            )
+        }
+        Task { [notifications] in await notifications.deliver(note) }
+    }
+
     // MARK: Derived values
 
     /// Projects Claude Code is actively working in right now.
@@ -534,22 +601,41 @@ public final class AppModel {
         state(for: limit.provider).projections[limit.id]
     }
 
-    /// The limit whose number goes in the menu bar.
-    public var primaryLimit: LimitWindow? {
+    /// The window the panel leads with, and the reason it was chosen.
+    ///
+    /// `auto` asks which limit will actually stop you first — a question about time as much
+    /// as utilisation — so it ranks through `LimitConstraint` rather than taking whichever
+    /// window happens to show the biggest number. The explicit metrics still win when the
+    /// user has pinned one, falling back to the ranking when that window is not reported.
+    public var primaryConstraint: LimitConstraint.Ranked? {
         guard let snapshot else { return nil }
+        let automatic = snapshot.constraint(projections: state(for: selectedProvider).projections)
         switch settings.primaryMetric {
-        case .auto: return snapshot.bottleneck
-        case .session: return snapshot.sessionLimit ?? snapshot.bottleneck
-        case .weekly: return snapshot.weeklyLimit ?? snapshot.bottleneck
-        case .highestModel: return snapshot.modelLimits.first ?? snapshot.bottleneck
-        case .spend: return nil
+        case .auto:
+            return automatic
+        case .session:
+            return pinned(snapshot.sessionLimit, fallback: automatic)
+        case .weekly:
+            return pinned(snapshot.weeklyLimit, fallback: automatic)
+        case .highestModel:
+            return pinned(snapshot.modelLimits.first, fallback: automatic)
+        case .spend:
+            return nil
         }
     }
 
-    public var primaryPercent: Double? {
-        if settings.primaryMetric == .spend { return snapshot?.spend?.percent }
-        return primaryLimit?.percent
+    /// A user-pinned window keeps the ranking's reason when the ranking picked the same one,
+    /// so the chip stays truthful instead of always reading "tightest".
+    private func pinned(
+        _ limit: LimitWindow?, fallback: LimitConstraint.Ranked?
+    ) -> LimitConstraint.Ranked? {
+        guard let limit else { return fallback }
+        if let fallback, fallback.limit.id == limit.id { return fallback }
+        return LimitConstraint.Ranked(limit: limit, reason: .tightest)
     }
+
+    /// The limit whose number goes in the menu bar.
+    public var primaryLimit: LimitWindow? { primaryConstraint?.limit }
 
     /// The status item follows the selected popover tab while still choosing that provider's
     /// configured real limit. Disconnected or stale cached data remains unavailable.
@@ -600,12 +686,46 @@ public final class AppModel {
         }.count
     }
 
-    public func providerTightestPercent(_ provider: UsageProvider, now: Date) -> Double? {
+    /// Providers the user has actually set up, in a fixed order.
+    ///
+    /// "Set up" means we have either received data or been told why we could not — anything
+    /// but a provider that has simply never been connected. The menu-bar glyph draws one slot
+    /// per entry, so an untouched provider costs no width and a connected one that is
+    /// momentarily unreachable still holds its position rather than shifting its neighbours.
+    var connectedProviders: [UsageProvider] {
+        let live = UsageProvider.allCases.filter {
+            let state = state(for: $0)
+            return state.snapshot != nil || state.lastError != nil
+        }
+        // Before the first poll completes nothing qualifies; keep one slot so the glyph is an
+        // empty track rather than nothing at all.
+        return live.isEmpty ? [selectedProvider] : live
+    }
+
+    /// The window that binds `provider` first, or nil when it has no current data.
+    ///
+    /// Every surface that speaks for a provider without being on its tab — the switcher
+    /// pills, the status item, the hide-when-healthy threshold — resolves through this, so
+    /// they cannot end up describing different windows than the panel does.
+    public func providerConstraint(
+        _ provider: UsageProvider, now: Date
+    ) -> LimitConstraint.Ranked? {
         let state = state(for: provider)
         guard state.hasCurrentData(
             now: now, refreshInterval: TimeInterval(settings.refreshInterval.rawValue)
         ) else { return nil }
-        return state.snapshot?.bottleneck?.percent
+        return state.snapshot?.constraint(projections: state.projections)
+    }
+
+    /// Utilisation of that window. Thresholds are expressed in utilisation; displays are not
+    /// — see `providerRemainingPercent`.
+    public func providerTightestPercent(_ provider: UsageProvider, now: Date) -> Double? {
+        providerConstraint(provider, now: now)?.limit.percent
+    }
+
+    /// What that provider has left. This is the figure the UI shows.
+    public func providerRemainingPercent(_ provider: UsageProvider, now: Date) -> Double? {
+        providerConstraint(provider, now: now)?.limit.remainingPercent
     }
 
     /// A one-character hint shown when the menu-bar number is not the session limit, so
@@ -625,16 +745,19 @@ public final class AppModel {
     /// One line explaining which limit matters most right now.
     public var headline: String {
         if lastError == .missingToken || lastError == .codexAuthenticationRequired
-            || lastError == .cliNotFound || lastError == .missingCursorSession {
+            || lastError == .cliNotFound || lastError == .missingCursorSession
+            || lastError == .missingGrokSession {
             return "Not connected"
         }
-        guard let snapshot, let bottleneck = snapshot.bottleneck else {
+        guard let snapshot, let ranked = primaryConstraint ?? snapshot.constraint() else {
             return lastError?.title ?? "No usage data"
         }
-        if snapshot.limits.count > 1 {
-            return "\(bottleneck.shortTitle) is your tightest limit"
+        guard snapshot.limits.count > 1 else { return ranked.limit.title }
+        switch ranked.reason {
+        case .exhausted: return "\(ranked.limit.shortTitle) is spent"
+        case .runsDry: return "\(ranked.limit.shortTitle) runs out first"
+        case .tightest: return "\(ranked.limit.shortTitle) is your tightest limit"
         }
-        return bottleneck.title
     }
 
     /// Drives the menu bar tint, the severity rail, and the panel wash — so it tracks quota
@@ -777,6 +900,39 @@ public final class AppModel {
         LastUsageCache.clear(provider: .cursor)
     }
 
+    /// Called by `GrokLoginSheet` once the embedded `WKWebView` login has produced a
+    /// `grok.com` cookie. Saving triggers an immediate refresh, exactly like `saveToken`.
+    public func saveGrokSession(_ cookie: String) -> Bool {
+        let ok = grokSessionStore.save(cookie: cookie)
+        if ok {
+            updateProvider(.grok) { $0.lastError = nil }
+            refreshNow()
+        }
+        return ok
+    }
+
+    public func hasGrokSession() -> Bool {
+        grokSessionStore.load() != nil
+    }
+
+    public func disconnectGrok() {
+        grokSessionStore.clear()
+        updateProvider(.grok) {
+            $0.snapshot = nil
+            $0.lastSuccessAt = nil
+            $0.lastError = .missingGrokSession
+            $0.isShowingCachedData = false
+            $0.connectionState = .authenticationRequired
+            $0.dataSource = nil
+            $0.planLabel = nil
+            $0.cliDetected = false
+            $0.projections = [:]
+            $0.surgingLimitIDs = []
+            $0.weeklyAveragePerDay = nil
+        }
+        LastUsageCache.clear(provider: .grok)
+    }
+
     public func dashboardURL(for provider: UsageProvider) -> URL {
         if provider == .claude, let custom = URL(string: settings.dashboardURL) {
             return custom
@@ -813,6 +969,8 @@ public final class AppModel {
             chatGPT: DeadChatGPTService(),
             cursor: DeadCursorService(),
             cursorSessionStore: DeadCursorSessionStore(),
+            grok: DeadGrokService(),
+            grokSessionStore: DeadGrokSessionStore(),
             history: HistoryStore(url: URL(fileURLWithPath: "/dev/null")),
             settingsStore: SettingsStore(
                 defaults: UserDefaults(suiteName: "preview-\(UUID().uuidString)") ?? .standard
@@ -890,8 +1048,10 @@ public final class AppModel {
             $0.lastSuccessAt = nil
             $0.lastError = error
             $0.isShowingCachedData = false
-            $0.connectionState = (error == .codexAuthenticationRequired || error == .missingCursorSession)
-                ? .authenticationRequired : .unavailable
+            $0.connectionState = (
+                error == .codexAuthenticationRequired || error == .missingCursorSession
+                    || error == .missingGrokSession
+            ) ? .authenticationRequired : .unavailable
             $0.cliDetected = cliDetected
             $0.dataSource = nil
         }
@@ -920,11 +1080,23 @@ public final class AppModel {
         func clear() -> Bool { false }
     }
 
+    private struct DeadGrokService: GrokUsageServiceProtocol {
+        func fetchUsage() async throws -> GrokUsageResult { throw UsageAPIError.offline }
+        func hasStoredSession() -> Bool { false }
+    }
+
+    private struct DeadGrokSessionStore: GrokSessionCookieStoreProtocol {
+        func load() -> String? { nil }
+        func save(cookie: String) -> Bool { false }
+        func clear() -> Bool { false }
+    }
+
     private static func previewDataSource(for provider: UsageProvider) -> ProviderDataSource {
         switch provider {
         case .claude: return .anthropicOAuth
         case .chatgpt: return .codexCLI
         case .cursor: return .cursorWebViewSession
+        case .grok: return .grokWebViewSession
         }
     }
 

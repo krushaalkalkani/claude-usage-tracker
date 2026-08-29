@@ -1,13 +1,24 @@
 import SwiftUI
 import ClaudeUsageCore
 
-/// Claude and ChatGPT as two genuinely separate tabs.
+/// One genuinely separate tab per tracked service.
 ///
-/// The panel used to merge both into one ranked list — technically tidy, but it meant you
-/// could never look at "just Claude" or "just ChatGPT" the way the mental model of two
-/// separate subscriptions actually works. This restores the split, and goes further: each
-/// tab, even when not selected, carries its own live status dot and tightest-limit badge, so
+/// The panel used to merge them into one ranked list — technically tidy, but it meant you
+/// could never look at "just Claude" or "just ChatGPT" the way the mental model of separate
+/// subscriptions actually works. This restores the split, and goes further: each tab, even
+/// when not selected, carries its own live status dot and its own headline percentage, so
 /// switching is optional for the headline number and only required for the detail underneath.
+///
+/// That percentage is **what is left**, the same figure and the same window the hero shows
+/// once you switch to the tab. It used to be utilisation, which meant the Claude pill read
+/// "55%" while the Claude hero one row below read "45%" — the same limit, two numbers, and
+/// nothing on screen saying which was which.
+///
+/// The name and the percentage are stacked rather than sat side by side. Side by side worked
+/// at two and three providers and broke at four: 380pt of panel divided four ways left each
+/// label about 25pt after its dot and number, which rendered Cursor and ChatGPT as the same
+/// truncated "C…" — the one thing a provider switcher must never do. Stacking gives the name
+/// the tab's full width and costs one row of height.
 struct ProviderTabBar: View {
     @Bindable var model: AppModel
 
@@ -17,7 +28,7 @@ struct ProviderTabBar: View {
                 TabButton(
                     provider: provider,
                     isSelected: model.selectedProvider == provider,
-                    percent: model.providerTightestPercent(provider, now: model.tick),
+                    remaining: model.providerRemainingPercent(provider, now: model.tick),
                     severity: model.providerSeverity(provider),
                     hasError: model.state(for: provider).lastError != nil,
                     needsAttention: provider == .claude && !model.activity.attentionSessions.isEmpty
@@ -52,7 +63,8 @@ struct ProviderTabBar: View {
 private struct TabButton: View {
     let provider: UsageProvider
     let isSelected: Bool
-    let percent: Double?
+    /// Percentage points still available on that provider's binding limit.
+    let remaining: Double?
     let severity: Severity
     let hasError: Bool
     let needsAttention: Bool
@@ -60,17 +72,21 @@ private struct TabButton: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 6) {
-                StatusDot(color: dotColor)
-                Text(provider.displayName)
-                    .font(DS.label(12, weight: isSelected ? .semibold : .medium))
-                    .lineLimit(1)
-                Spacer(minLength: 4)
+            VStack(spacing: 2) {
+                HStack(spacing: 4) {
+                    StatusDot(color: dotColor)
+                    Text(provider.displayName)
+                        .font(DS.label(11.5, weight: isSelected ? .semibold : .medium))
+                        .lineLimit(1)
+                        // The longest name ("ChatGPT") is within a hair of the tab width at
+                        // the largest system text sizes; shrinking beats truncating.
+                        .minimumScaleFactor(0.75)
+                }
                 badge
             }
             .foregroundStyle(isSelected ? DS.ink : DS.inkMuted)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 6)
             .frame(maxWidth: .infinity)
             .background(
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
@@ -92,32 +108,42 @@ private struct TabButton: View {
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
 
-    /// The live preview on an unselected tab — the new bit. Selected tabs skip it: the full
-    /// detail is already on screen underneath, so repeating the number would be noise.
+    /// The live preview line. Always occupies its row, on every tab, so the four pills stay
+    /// the same height and the row does not jump as the selection moves. A tab with nothing
+    /// to report shows a placeholder rather than collapsing.
     @ViewBuilder
     private var badge: some View {
         if hasError {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 9, weight: .semibold))
                 .foregroundStyle(DS.tight)
-        } else if !isSelected, let percent {
-            Text("\(Int(percent.rounded()))%")
+                .frame(height: 12)
+        } else if let remaining {
+            Text("\(Int(remaining.rounded()))%")
                 .font(DS.figure(10.5, weight: .semibold))
-                .foregroundStyle(DS.accent(severity))
+                // Muted on the selected tab: the same number is the hero directly below, so
+                // here it is orientation rather than the headline.
+                .foregroundStyle(isSelected ? DS.inkFaint : DS.accent(severity))
                 .monospacedDigit()
+                .frame(height: 12)
+        } else {
+            Text("—")
+                .font(DS.figure(10.5, weight: .semibold))
+                .foregroundStyle(DS.inkFaint)
+                .frame(height: 12)
         }
     }
 
     private var dotColor: Color {
         if needsAttention { return DS.tight }
         if hasError { return DS.tight }
-        guard percent != nil else { return DS.inkFaint }
+        guard remaining != nil else { return DS.inkFaint }
         return DS.accent(severity)
     }
 
     private var accessibilityLabel: String {
         var parts = [provider.displayName]
-        if let percent { parts.append("\(Int(percent.rounded())) percent") }
+        if let remaining { parts.append("\(Int(remaining.rounded())) percent left") }
         if hasError { parts.append("needs attention") }
         return parts.joined(separator: ", ")
     }

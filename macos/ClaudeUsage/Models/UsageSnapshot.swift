@@ -34,6 +34,28 @@ public struct UsageSpendControl: Sendable, Codable, Equatable {
     }
 }
 
+/// How one pooled allowance was spent, broken down by the provider's own products.
+///
+/// Deliberately *not* a `LimitWindow`. These are shares of a single meter, not separate
+/// meters: Grok's usage panel reads "100% used" with "Automations 97% · Chat 2% · Imagine 1%"
+/// underneath, and the three add up to the one number above them. Modelling them as limit
+/// windows would invent three quotas that do not exist, put them in the "Other limits" list
+/// as peers of the real one, and let a 97 % *share* raise a critical alert of its own.
+public struct ProductUsageShare: Sendable, Codable, Equatable, Identifiable {
+    /// Stable key for `ForEach` identity and history. Provider-local, like `LimitWindow.id`.
+    public let id: String
+    /// The provider's own name for the product, e.g. "Automations".
+    public let label: String
+    /// Share of the pooled meter, on the same 0…100 scale as `LimitWindow.percent`.
+    public let percent: Double
+
+    public init(id: String, label: String, percent: Double) {
+        self.id = id
+        self.label = label
+        self.percent = percent
+    }
+}
+
 /// A parsed, normalized view of one `/api/oauth/usage` response.
 public struct UsageSnapshot: Sendable, Codable, Equatable {
     public let provider: UsageProvider
@@ -44,6 +66,8 @@ public struct UsageSnapshot: Sendable, Codable, Equatable {
     public let spend: SpendInfo?
     public let credits: UsageCredits?
     public let spendControl: UsageSpendControl?
+    /// Where a single pooled allowance went. Empty for providers that do not report it.
+    public let productShares: [ProductUsageShare]
     /// Notes about fields we expected but did not find. Surfaced only in debug mode; never
     /// blocks rendering.
     public let schemaWarnings: [String]
@@ -58,7 +82,8 @@ public struct UsageSnapshot: Sendable, Codable, Equatable {
         raw: JSONValue? = nil,
         provider: UsageProvider = .claude,
         credits: UsageCredits? = nil,
-        spendControl: UsageSpendControl? = nil
+        spendControl: UsageSpendControl? = nil,
+        productShares: [ProductUsageShare] = []
     ) {
         self.provider = provider
         self.fetchedAt = fetchedAt
@@ -66,6 +91,7 @@ public struct UsageSnapshot: Sendable, Codable, Equatable {
         self.spend = spend
         self.credits = credits
         self.spendControl = spendControl
+        self.productShares = productShares
         self.schemaWarnings = schemaWarnings
         self.raw = raw
     }
@@ -122,7 +148,8 @@ public struct UsageSnapshot: Sendable, Codable, Equatable {
     // `raw` is excluded from Codable so that persisting a snapshot never writes the full
     // payload (which carries workspace/organization identifiers) to disk.
     private enum CodingKeys: String, CodingKey {
-        case provider, fetchedAt, limits, spend, credits, spendControl, schemaWarnings
+        case provider, fetchedAt, limits, spend, credits, spendControl, productShares
+        case schemaWarnings
     }
 
     public init(from decoder: Decoder) throws {
@@ -133,6 +160,7 @@ public struct UsageSnapshot: Sendable, Codable, Equatable {
         spend = try c.decodeIfPresent(SpendInfo.self, forKey: .spend)
         credits = try c.decodeIfPresent(UsageCredits.self, forKey: .credits)
         spendControl = try c.decodeIfPresent(UsageSpendControl.self, forKey: .spendControl)
+        productShares = try c.decodeIfPresent([ProductUsageShare].self, forKey: .productShares) ?? []
         schemaWarnings = try c.decodeIfPresent([String].self, forKey: .schemaWarnings) ?? []
         raw = nil
     }

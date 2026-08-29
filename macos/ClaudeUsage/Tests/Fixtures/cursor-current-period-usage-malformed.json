@@ -4,7 +4,8 @@
   "planUsage": {
     "remaining": 4900,
     "limit": 7000,
-    "totalPercentUsed": "-15"
+    "autoPercentUsed": "-15",
+    "apiPercentUsed": "not-a-number"
   },
   "enabled": true
 }

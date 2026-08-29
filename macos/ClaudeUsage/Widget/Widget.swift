@@ -59,8 +59,14 @@ struct UsageWidgetView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack {
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
                 Text("Usage").font(.system(size: 12, weight: .semibold))
+                // The unit, stated once. Every figure below is headroom, matching the panel
+                // and the menu bar — and matching what this widget's own description has
+                // always claimed it showed.
+                Text("% left")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
                 Spacer()
                 if let updated = entry.lastUpdated {
                     Text(updated, style: .relative)
@@ -83,11 +89,13 @@ struct UsageWidgetView: View {
                             .font(.system(size: 10, weight: .medium))
                             .lineLimit(1)
                         Spacer(minLength: 4)
-                        Text("\(Int(limit.percent.rounded()))%")
+                        Text("\(Int(limit.remainingPercent.rounded()))%")
                             .font(.system(size: 11, weight: .semibold))
                             .monospacedDigit()
                     }
-                    ProgressView(value: min(limit.percent / 100, 1))
+                    // Drains as the allowance is spent, like the bar next to the number
+                    // rather than against it.
+                    ProgressView(value: min(limit.remainingPercent / 100, 1))
                         .progressViewStyle(.linear)
                         .tint(tint(limit.severity))
                 }
@@ -117,8 +125,11 @@ struct ClaudeUsageWidget: Widget {
                             provider: UsageProvider()) { entry in
             UsageWidgetView(entry: entry)
         }
-        .configurationDisplayName("Claude & ChatGPT Usage")
-        .description("Quota remaining, as last seen by the menu bar app.")
+        // Named for what it tracks now. "Claude & ChatGPT" stopped being the whole list once
+        // Cursor and Grok became tabs, and a widget that omits two of them from its own name
+        // reads as though it cannot show them.
+        .configurationDisplayName("AI Usage")
+        .description("How much of each plan's allowance is left, as last seen by the menu bar app.")
         .supportedFamilies([.systemSmall, .systemMedium])
     }
 }

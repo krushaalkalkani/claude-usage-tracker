@@ -173,7 +173,7 @@ private struct ProvidersPane: View {
     @State private var token = ""
     @State private var saveResult: String?
     @State private var cursorResult: String?
-    @State private var showingCursorLogin = false
+    @State private var grokResult: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -251,7 +251,7 @@ private struct ProvidersPane: View {
                 SettingsValueRow(title: "Data source", value: cursorSource)
                 RowRule()
                 HStack(spacing: 8) {
-                    Button("Connect Cursor") { showingCursorLogin = true }
+                    Button("Connect Cursor") { CursorLoginPresenter.shared.show(model: model) }
                     Button("Remove stored session") {
                         model.disconnectCursor()
                         cursorResult = "Removed."
@@ -268,10 +268,48 @@ private struct ProvidersPane: View {
                 .padding(.horizontal, 11)
                 .padding(.vertical, 8)
             }
+
+            SettingsSection(
+                title: "Grok",
+                footnote: "Grok reports consumer usage only to a signed-in session, so the tracker signs in through a one-time embedded browser and stores only the resulting session cookie in your login keychain."
+            ) {
+                SettingsValueRow(title: "Session", value: grokSession)
+                RowRule()
+                SettingsValueRow(title: "Connection", value: grokConnection)
+                RowRule()
+                SettingsValueRow(title: "Data source", value: grokSource)
+                RowRule()
+                HStack(spacing: 8) {
+                    Button("Connect Grok") { GrokLoginPresenter.shared.show(model: model) }
+                    Button("Remove stored session") {
+                        model.disconnectGrok()
+                        grokResult = "Removed."
+                    }
+                    .disabled(!model.hasGrokSession())
+                    Spacer(minLength: 4)
+                    if let grokResult {
+                        Text(grokResult)
+                            .font(DS.label(10.5))
+                            .foregroundStyle(DS.inkFaint)
+                    }
+                }
+                .controlSize(.small)
+                .padding(.horizontal, 11)
+                .padding(.vertical, 8)
+            }
         }
-        .sheet(isPresented: $showingCursorLogin) {
-            CursorLoginSheet(model: model)
-        }
+    }
+
+    private var grokSession: String {
+        model.hasGrokSession() ? "Connected" : "Not connected"
+    }
+
+    private var grokConnection: String {
+        connectionLabel(model.state(for: .grok).connectionState)
+    }
+
+    private var grokSource: String {
+        model.state(for: .grok).dataSource?.label ?? "Not available"
     }
 
     private var cursorSession: String {
@@ -405,6 +443,13 @@ private struct NotificationPane: View {
                             }
                         }
                         .controlSize(.small)
+                    } else {
+                        // Posts a real banner using the live numbers, so what the alerts look
+                        // like is checkable here instead of only when a threshold happens to
+                        // be crossed.
+                        Button("Preview") { model.sendSampleNotification() }
+                            .controlSize(.small)
+                            .disabled(!on)
                     }
                 }
                 .padding(.horizontal, 11)
@@ -560,7 +605,9 @@ private struct HistoryPane: View {
                 RowRule()
                 SettingsValueRow(
                     title: "Samples retained",
-                    value: "Claude \(model.state(for: .claude).samples.count) · ChatGPT \(model.state(for: .chatgpt).samples.count) · Cursor \(model.state(for: .cursor).samples.count)"
+                    value: UsageProvider.allCases
+                        .map { "\($0.displayName) \(model.state(for: $0).samples.count)" }
+                        .joined(separator: " · ")
                 )
                 RowRule()
                 HStack(spacing: 8) {
@@ -657,17 +704,19 @@ private struct PrivacyPane: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             SettingsSection(title: "What leaves this Mac") {
-                paragraph("Claude usage is read from Anthropic. ChatGPT/Codex usage is read through the local Codex CLI; if that read-only method is unavailable, an isolated request may be sent directly to ChatGPT using Codex's existing login. Cursor usage is read from Cursor's own dashboard endpoints using the session cookie from a one-time embedded sign-in. There is no telemetry, analytics endpoint, crash reporter, or backend belonging to this project.")
+                paragraph("Claude usage is read from Anthropic. ChatGPT/Codex usage is read through the local Codex CLI; if that read-only method is unavailable, an isolated request may be sent directly to ChatGPT using Codex's existing login. Cursor and Grok usage are each read from that service's own dashboard endpoints, using the session cookie from a one-time embedded sign-in. There is no telemetry, analytics endpoint, crash reporter, or backend belonging to this project.")
             }
 
             SettingsSection(title: "Where credentials live") {
-                paragraph("Claude credentials stay in your login keychain or remain managed by Claude Code. ChatGPT credentials remain managed by Codex. The tracker reads the local Codex OAuth file only for the isolated fallback, never modifies it, and never stores ChatGPT credentials. The Cursor session cookie is captured once from an embedded sign-in and stored only in your login keychain — this app never reads Safari's, Chrome's, or any other browser's cookies.")
+                paragraph("Claude credentials stay in your login keychain or remain managed by Claude Code. ChatGPT credentials remain managed by Codex. The tracker reads the local Codex OAuth file only for the isolated fallback, never modifies it, and never stores ChatGPT credentials. The Cursor and Grok session cookies are each captured once from an embedded sign-in and stored only in your login keychain, as separate items — this app never reads Safari's, Chrome's, or any other browser's cookies.")
                 RowRule()
                 paragraph("Credentials, account IDs, emails, prompts, responses, and session content are never logged or included in the copied debug report.")
             }
 
-            SettingsSection(title: "What ChatGPT and Cursor usage mean") {
-                paragraph("OpenAI numbers in this app are ChatGPT - Codex/agentic allowance. OpenAI exposes separate allowances for models and features, so this is not a meter for every ordinary ChatGPT conversation. Cursor's \"Grok Bot\" figure is a Cursor-bundled bot feature, unrelated to any xAI/Grok subscription.")
+            SettingsSection(title: "What each provider's numbers mean") {
+                paragraph("OpenAI numbers in this app are ChatGPT - Codex/agentic allowance. OpenAI exposes separate allowances for models and features, so this is not a meter for every ordinary ChatGPT conversation.")
+                RowRule()
+                paragraph("The Grok tab is your xAI plan's own pooled allowance, with the same split across Automations, Chat, and Imagine that grok.com shows. Cursor's \"Grok Bot\" figure is a different thing entirely: a Cursor-bundled bot feature that draws on Cursor's plan, not on your xAI subscription. The two move independently.")
             }
 
             SettingsSection(title: "Stored locally") {
@@ -716,6 +765,7 @@ private struct PrivacyPane: View {
             ("last-usage.json", "the most recent Claude snapshot"),
             ("last-usage-chatgpt.json", "the most recent ChatGPT snapshot"),
             ("last-usage-cursor.json", "the most recent Cursor snapshot"),
+            ("last-usage-grok.json", "the most recent Grok snapshot"),
             ("sessions/", "Claude Code session metadata"),
             ("events.jsonl", "the last 200 hook event names"),
             ("notifications.json", "which alerts have already fired"),

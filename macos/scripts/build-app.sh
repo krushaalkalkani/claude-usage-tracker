@@ -58,11 +58,45 @@ ditto --noextattr --norsrc --noacl \
   "$PKG_DIR/ClaudeUsage/Resources/Info.plist" "$STAGED_APP/Contents/Info.plist"
 printf 'APPL????' > "$STAGED_APP/Contents/PkgInfo"
 
-# Ad-hoc signature. UNUserNotificationCenter and SMAppService both want a signed bundle
-# with a stable identifier; without this the app still runs but falls back to the osascript
-# notification path and cannot register as a login item. Sign in /private/tmp: Desktop can be
-# managed by File Provider, which attaches provenance metadata quickly enough to make codesign
-# reject an otherwise clean bundle. The verified signature is then copied into build/.
+# ---- App icon --------------------------------------------------------------------
+# Drawn by the binary we just built (`--render-appicon`) and packed with iconutil, which
+# ships with Command Line Tools — so this still needs no Xcode. Without an icon the bundle
+# falls back to the generic placeholder, and that placeholder is what shows up next to every
+# notification the app posts.
+echo "==> app icon"
+ICONSET="$STAGING_ROOT/AppIcon.iconset"
+if "$BIN" --render-appicon "$ICONSET" >/dev/null 2>&1 \
+   && iconutil -c icns "$ICONSET" -o "$STAGED_APP/Contents/Resources/AppIcon.icns" 2>/dev/null; then
+  echo "    AppIcon.icns"
+else
+  echo "    (icon generation failed — shipping without one)" >&2
+fi
+
+# ---- Signing identity ------------------------------------------------------------
+# UNUserNotificationCenter refuses an ad-hoc signature outright: requestAuthorization fails
+# with UNErrorDomain code 1, "Notifications are not allowed for this application", and every
+# alert then goes out through the osascript fallback — posted as *Script Editor*, with Script
+# Editor's icon and no thumbnail. That is why the app's notifications look like they belong to
+# something else. So prefer a real identity whenever the machine has one; ad-hoc stays as the
+# fallback so a clean checkout with no developer account still builds and runs.
+#
+# Override with CODESIGN_IDENTITY="Developer ID Application: …" ./scripts/build-app.sh
+IDENTITY="${CODESIGN_IDENTITY:-}"
+if [ -z "$IDENTITY" ]; then
+  for PREFIX in "Developer ID Application:" "Apple Development:"; do
+    IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null \
+      | awk -F'"' -v p="$PREFIX" 'index($2, p) == 1 { print $2; exit }')"
+    [ -n "$IDENTITY" ] && break
+  done
+fi
+if [ -z "$IDENTITY" ]; then
+  IDENTITY="-"
+fi
+
+# SMAppService also wants a signed bundle with a stable identifier; without one the app still
+# runs but cannot register as a login item. Sign in /private/tmp: Desktop can be managed by
+# File Provider, which attaches provenance metadata quickly enough to make codesign reject an
+# otherwise clean bundle. The verified signature is then copied into build/.
 # ---- Notification Centre widget (opt-in: BUILD_WIDGET=1) --------------------------
 # SwiftPM cannot emit an .appex, so the extension is hand-assembled: the widget is built as a
 # plain executable, wrapped in the bundle layout WidgetKit expects, and nested under
@@ -106,7 +140,7 @@ if [ "${BUILD_WIDGET:-0}" = "1" ]; then
 </dict>
 </plist>
 PLIST
-  if codesign --force --sign - --timestamp=none "$APPEX" >/dev/null 2>&1; then
+  if codesign --force --sign "$IDENTITY" --timestamp=none "$APPEX" >/dev/null 2>&1; then
     echo "    widget: com.krushal.claude-usage-tracker.widget"
   else
     echo "    widget signing failed — removing it rather than shipping an unsigned appex" >&2
@@ -114,12 +148,21 @@ PLIST
   fi
 fi
 
-echo "==> codesign (ad-hoc)"
-if codesign --force --sign - \
+if [ "$IDENTITY" = "-" ]; then
+  echo "==> codesign (ad-hoc — no signing identity found)"
+else
+  echo "==> codesign ($IDENTITY)"
+fi
+if codesign --force --sign "$IDENTITY" \
      --identifier "com.krushal.claude-usage-tracker" \
      "$STAGED_APP" >/dev/null 2>&1 \
    && codesign --verify --deep --strict "$STAGED_APP" >/dev/null 2>&1; then
   echo "    signed and verified: $(codesign -dv "$STAGED_APP" 2>&1 | awk -F= '/^Identifier/{print $2}')"
+  if [ "$IDENTITY" = "-" ]; then
+    echo "    note: an ad-hoc signature cannot use the system notification API. Alerts will"
+    echo "          be posted through osascript instead, which shows Script Editor's icon"
+    echo "          and drops the usage thumbnail."
+  fi
 else
   echo "    (signing failed — the app still runs, but notifications will use the"
   echo "     osascript fallback and 'Launch at login' will be unavailable)"

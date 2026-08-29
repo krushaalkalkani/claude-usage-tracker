@@ -1,6 +1,6 @@
 # Claude Usage Tracker v2
 
-Know how much Claude, ChatGPT Codex/agentic, and Cursor quota you have left, how fast you are
+Know how much Claude, ChatGPT Codex/agentic, Cursor, and Grok quota you have left, how fast you are
 burning it, whether you will run out before the reset - and what Claude Code is doing right
 now - without leaving the menu bar.
 
@@ -8,8 +8,8 @@ Two clients, one data model:
 
 | | |
 |---|---|
-| **Native macOS menu bar app** | SwiftUI `MenuBarExtra`, Claude plus ChatGPT Codex/agentic and Cursor usage, notifications, local history, and Claude Code activity. The main event. |
-| **Web dashboard** | React + Vite. Claude gauges, charts, and CSV export. ChatGPT and Cursor support is native-only in this release. |
+| **Native macOS menu bar app** | SwiftUI `MenuBarExtra`, Claude plus ChatGPT Codex/agentic, Cursor, and Grok usage, notifications, local history, and Claude Code activity. The main event. |
+| **Web dashboard** | React + Vite. Claude gauges, charts, and CSV export. ChatGPT, Cursor, and Grok support is native-only in this release. |
 
 **Claude**
 
@@ -62,18 +62,24 @@ line.
 
 **Usage**
 - 5-hour session and 7-day windows, with time-to-reset and the exact reset clock time.
-- One native popover with a persistent Claude / ChatGPT / Cursor provider switcher. ChatGPT is
-  labeled **Codex / agentic allowance** because it is not a universal meter for ordinary ChatGPT
-  chats.
+- One native popover with a persistent Claude / ChatGPT / Cursor / Grok provider switcher.
+  ChatGPT is labeled **Codex / agentic allowance** because it is not a universal meter for
+  ordinary ChatGPT chats.
 - ChatGPT windows come from the signed-in local Codex CLI, including additional model-specific
   limits and provider-supplied window durations when available.
 - Cursor windows are its included-usage meter and its weekly **Grok Bot** allowance — a
-  Cursor-bundled bot feature, unrelated to any xAI/Grok subscription.
+  Cursor-bundled bot feature that draws on your Cursor plan, **not** on your xAI subscription.
+  It is a different meter from the Grok tab and the two move independently.
+- Grok is your xAI plan's pooled allowance (weekly on SuperGrok, monthly on some plans), with
+  the same **Where it went** split across Automations, Chat, Imagine and the rest that
+  grok.com shows, plus on-demand spend and any extra usage credits. The product percentages are
+  shares of that one meter, not separate quotas, so a 97 % Automations slice never raises an
+  alert of its own.
 - **Model-specific limits** — read from the API's `limits[]` array, which is where Anthropic
   actually exposes them. The section is hidden entirely when your account has none.
 - **Extra usage / spend** in real money, respecting the currency exponent the API sends.
 - The menu bar follows the selected provider: `A` for Anthropic/Claude, `O` for OpenAI/ChatGPT,
-  `C` for Cursor. Within that provider it still shows the real limit **closest to its ceiling**,
+  `C` for Cursor, `X` for xAI/Grok. Within that provider it still shows the real limit **closest to its ceiling**,
   so `5h = 25%, 7d = 91%` reads as *91%*, tagged `W`, instead of a comfortable-looking 25%.
 
 **Analytics**
@@ -177,6 +183,26 @@ never by reading Safari's, Chrome's, or any other browser's cookies. A rejected 
 cookie is reported as "Cursor session expired"; remove it any time from Settings › Providers ›
 **Remove stored session**.
 
+### Grok
+
+Grok reports consumer usage only to a signed-in session, so it works exactly like Cursor:
+Settings › Providers › **Connect Grok** opens a one-time embedded `WKWebView` sign-in at
+`grok.com`, and the resulting `grok.com` cookies are read from that view's own website data
+store and kept in Keychain — never from Safari's, Chrome's, or any other browser's cookie jar.
+
+The usage call itself is **gRPC-Web**, not JSON. grok.com's `GrokBuildBilling` service does
+declare a `GET /rest/grok/credits` route in its proto, but that route is not mounted on the
+public edge (it answers `{"code":5,"message":"Not Found"}`), so the app calls
+`grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig` the same way the web app does and decodes
+the protobuf response itself — there is no protobuf dependency, just the handful of fields the
+panel renders (`macos/ClaudeUsage/Models/GrokWireFormat.swift`). Because gRPC reports failure
+in `grpc-status` rather than in the HTTP status, an expired session arrives as `HTTP 200` and
+is still correctly reported as "Grok session expired". The plan label comes from
+`GET /rest/subscriptions`, which *is* ordinary JSON, and its failure costs only the label.
+
+`ClaudeUsage --debug-grok` prints the HTTP status, the gRPC status, and the decoded payload for
+the stored session, and never prints the cookie.
+
 The web dashboard needs a token pasted in (browsers cannot read your keychain). Get one with:
 
 ```bash
@@ -198,17 +224,19 @@ Everything is local. There is no server belonging to this project, no analytics 
 no crash reporter.
 
 **Network:** Claude usage goes to `api.anthropic.com`. ChatGPT/Codex usage normally travels
-through the local Codex app-server; the isolated fallback goes to `chatgpt.com`. Cursor usage
-goes to `cursor.com`'s own dashboard endpoints, authenticated with the session cookie from a
-one-time embedded sign-in. There are no project analytics or backend destinations.
+through the local Codex app-server; the isolated fallback goes to `chatgpt.com`. Cursor and
+Grok usage go to `cursor.com`'s and `grok.com`'s own endpoints, each authenticated with the
+session cookie from a one-time embedded sign-in. There are no project analytics or backend
+destinations.
 
 **Credentials:** Claude credentials live in the login keychain or remain managed by Claude
 Code. ChatGPT credentials remain managed by Codex. The tracker never modifies Codex's OAuth
-file or stores ChatGPT credentials. The Cursor session cookie is captured once from the app's
-own embedded sign-in — never from another browser's cookie jar — and stored only in Keychain.
-Credentials, account identifiers, emails, prompts, responses, and session content are not
-logged or included in copied debug reports. Network fallbacks, including every Cursor request,
-use an ephemeral `URLSession` with no cache or shared cookie storage.
+file or stores ChatGPT credentials. The Cursor and Grok session cookies are each captured once
+from the app's own embedded sign-in — never from another browser's cookie jar — and stored as
+separate Keychain items. Credentials, account identifiers, emails, prompts, responses, and
+session content are not logged or included in copied debug reports. Network fallbacks,
+including every Cursor and Grok request, use an ephemeral `URLSession` with no cache or shared
+cookie storage.
 
 **Stored locally**, under `~/.claude-usage-tracker/` (mode `700`):
 
@@ -218,6 +246,7 @@ use an ephemeral `URLSession` with no cache or shared cookie storage.
 | `last-usage.json` | the most recent Claude snapshot, so a cold launch isn't blank |
 | `last-usage-chatgpt.json` | the most recent ChatGPT snapshot; no raw response or credentials |
 | `last-usage-cursor.json` | the most recent Cursor snapshot; no raw response or session cookie |
+| `last-usage-grok.json` | the most recent Grok snapshot; no raw response or session cookie |
 | `sessions/*.json` | Claude Code session metadata, one file per session |
 | `events.jsonl` | the last 200 hook **event names** and timestamps |
 | `activity.json` | a rollup for anything else you want to wire up (status bars, scripts) |
